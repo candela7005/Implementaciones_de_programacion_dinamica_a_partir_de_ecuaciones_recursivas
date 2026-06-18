@@ -1,0 +1,9 @@
+// Corte de varilla: máximo beneficio cortando una varilla de longitud N.
+// price[k] es el precio de un trozo de longitud k (price[1..N]).
+nat N;
+array<nat> price;
+
+rod(0) = 0;
+rod(n) = max{1 <= k <= n}( price[k] + rod(n - k) );
+
+return rod(N);

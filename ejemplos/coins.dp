@@ -1,0 +1,11 @@
+// Cambio de monedas: mínimo número de monedas para sumar V.
+// Necesita la precondición de que cada moneda vale al menos 1 (si no, la
+// recurrencia podría no terminar). Solo se puede verificar con --smt.
+nat N, V;
+array<nat> moneda;
+requires forall k: moneda[k] >= 1;
+
+coins(0) = 0;
+coins(v) = min{1 <= k <= N}( coins(v - moneda[k]) + 1 ) if v > 0;
+
+return coins(V);

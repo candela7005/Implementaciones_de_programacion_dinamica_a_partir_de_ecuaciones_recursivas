@@ -1,0 +1,9 @@
+// Números de Tribonacci
+nat N;
+
+trib(0) = 0;
+trib(1) = 1;
+trib(2) = 1;
+trib(n) = trib(n-1) + trib(n-2) + trib(n-3);
+
+return trib(N);

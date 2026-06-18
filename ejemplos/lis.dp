@@ -1,0 +1,13 @@
+// Subsecuencia creciente más larga que TERMINA en la posición i (a[1..N]).
+// La reducción agrega solo los predecesores k con a[k] < a[i]; si no hay ninguno
+// (a[i] es menor que todos los anteriores), el máximo del conjunto vacío es 0,
+// así que LIS(i) = 1 (la subsecuencia formada solo por a[i]).
+// La LIS global sería el máximo de LIS(i) sobre todo i; aquí se devuelve la que
+// termina en N, porque el retorno del DSL es un único valor.
+nat N;
+array<nat> a;
+
+LIS(1) = 1;
+LIS(i) = 1 + max{1 <= k < i : a[k] < a[i]}( LIS(k) ) if i > 1;
+
+return LIS(N);

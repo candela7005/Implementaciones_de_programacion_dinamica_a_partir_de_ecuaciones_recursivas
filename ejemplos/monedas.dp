@@ -1,0 +1,22 @@
+// Cambio de monedas: MÍNIMO número de monedas (con repetición) para sumar C,
+// usando N tipos de moneda d[1..N]. Formulación 2D con guarda.
+//
+// La guarda `if d[i] <= c` garantiza c - d[i] >= 0, así que el índice nunca es
+// negativo (a diferencia de la versión 1D, que no puede filtrar las monedas).
+// La terminación necesita que cada moneda valga >= 1 (vía --smt y el `requires`).
+//
+// Caso base "imposible": monedas(0, c) con c > 0 no tiene solución (no quedan
+// tipos de moneda). Es el elemento neutro ∞ del semianillo (min, +); como el DSL
+// no tiene ∞, se usa un centinela suficientemente grande (mayor que cualquier
+// respuesta real, que es <= C). Si el resultado sale igual al centinela, no hay
+// forma de dar el cambio.
+nat N, C;
+array<nat> d;
+requires forall k: d[k] >= 1;
+
+monedas(i, 0) = 0;
+monedas(0, c) = 1000000 if c > 0;
+monedas(i, c) = monedas(i - 1, c) if d[i] > c;
+monedas(i, c) = min{ monedas(i - 1, c), 1 + monedas(i, c - d[i]) } if d[i] <= c;
+
+return monedas(N, C);

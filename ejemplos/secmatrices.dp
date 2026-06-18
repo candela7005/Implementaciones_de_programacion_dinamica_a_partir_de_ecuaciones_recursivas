@@ -1,0 +1,12 @@
+// Multiplicación de cadena de matrices (N matrices A_1..A_N).
+// Convención de índices 1-based, uniforme con el resto de ejemplos: el vector de
+// dimensiones se provee como d[1..N+1] con la posición 0 de centinela (no usada),
+// y la matriz A_i tiene tamaño d[i] x d[i+1]. El compilador no transforma los
+// índices, así que el coste de partir [i,j] en k es d[i]*d[k+1]*d[j+1].
+nat N;
+array<nat> d;
+
+secMatrices(i, i) = 0;
+secMatrices(i, j) = min{i <= k < j}( secMatrices(i, k) + secMatrices(k + 1, j) + d[i] * d[k + 1] * d[j + 1] );
+
+return secMatrices(1, N);

@@ -1,0 +1,12 @@
+// Camino de coste mínimo en una matriz
+// Convención de índices 1-based: coste[1..F][1..C] (fila/columna 0 son
+// centinelas no usados; la matriz se provee con tamaño (F+1) x (C+1)).
+nat F, C;
+array<array<nat>> coste;
+
+camino(1, 1) = coste[1][1];
+camino(i, 1) = camino(i - 1, 1) + coste[i][1] if i > 1;
+camino(1, j) = camino(1, j - 1) + coste[1][j] if j > 1;
+camino(i, j) = min{ camino(i - 1, j), camino(i, j - 1) } + coste[i][j] if i > 1 and j > 1;
+
+return camino(F, C);

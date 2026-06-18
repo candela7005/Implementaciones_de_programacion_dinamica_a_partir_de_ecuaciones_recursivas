@@ -1,0 +1,12 @@
+// Longest Common Subsequence
+// Convención de índices 1-based: A[1..N], B[1..M] (la posición 0 es un
+// centinela no usado; el array se provee con tamaño N+1 / M+1).
+nat N, M;
+array<char> A, B;
+
+LCS(i, 0) = 0;
+LCS(0, j) = 0;
+LCS(i, j) = LCS(i-1, j-1) + 1 if A[i] == B[j];
+LCS(i, j) = max{ LCS(i - 1, j), LCS(i, j-1) } if A[i] != B[j];
+
+return LCS(N, M);

@@ -1,0 +1,13 @@
+# Artefactos de compilación C++
+*.obj
+*.exe
+*.out
+*.ilk
+*.pdb
+
+# Python
+__pycache__/
+*.pyc
+
+# Datos de sesión de Claude Code (no subir)
+.claude/

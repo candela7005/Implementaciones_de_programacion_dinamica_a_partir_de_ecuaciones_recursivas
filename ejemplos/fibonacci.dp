@@ -1,0 +1,7 @@
+// Sucesión de Fibonacci. Necesita DOS casos base (fib(0) y fib(1)); con uno
+// solo, fib(n) leería fib(-1) — el análisis de índices con --smt lo detecta.
+nat N;
+fib(0) = 0;
+fib(1) = 1;
+fib(n) = fib(n - 1) + fib(n - 2);
+return fib(N);

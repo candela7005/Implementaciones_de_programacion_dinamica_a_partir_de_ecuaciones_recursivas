@@ -1,0 +1,10 @@
+// Coeficientes binomiales: N sobre K
+// Las bases se solapan en (0,0): C(0,0)=1, así que binom(n,0)=1 debe ir
+// PRIMERA (la semántica es "la primera regla que encaja gana").
+nat N, K;
+
+binom(n, 0) = 1;
+binom(0, k) = 0;
+binom(n, k) = binom(n - 1, k - 1) + binom(n - 1, k);
+
+return binom(N, K);

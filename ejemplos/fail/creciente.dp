@@ -1,0 +1,4 @@
+nat N;
+f(0) = 0;
+f(n) = f(n + 1);
+return f(N);

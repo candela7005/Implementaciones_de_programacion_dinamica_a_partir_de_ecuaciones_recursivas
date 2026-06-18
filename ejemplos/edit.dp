@@ -1,0 +1,11 @@
+// Distancia de edición (Levenshtein)
+// Índices 1-based: A[1..N], B[1..M] (posición 0 centinela).
+nat N, M;
+array<char> A, B;
+
+edit(i, 0) = i;
+edit(0, j) = j;
+edit(i, j) = edit(i-1, j-1) if A[i] == B[j];
+edit(i, j) = min{ edit(i-1, j), edit(i, j-1), edit(i-1, j-1) } + 1 if A[i] != B[j];
+
+return edit(N, M);

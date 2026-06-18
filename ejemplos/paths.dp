@@ -1,0 +1,10 @@
+// Número de caminos en una rejilla F x C (solo movimientos derecha/abajo)
+// El caso general va guardado (i > 1 and j > 1) para que el algoritmo
+// ascendente no intente rellenar la fila/columna 0 (fuera del dominio).
+nat F, C;
+
+paths(1, j) = 1;
+paths(i, 1) = 1;
+paths(i, j) = paths(i-1, j) + paths(i, j-1) if i > 1 and j > 1;
+
+return paths(F, C);

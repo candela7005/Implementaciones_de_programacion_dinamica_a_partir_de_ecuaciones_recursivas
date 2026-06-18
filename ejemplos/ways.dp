@@ -1,0 +1,13 @@
+// Número de formas de dar cambio de V con N tipos de moneda (combinaciones).
+// Bien definida: la guarda moneda[i] <= v evita índices negativos.
+// La terminación requiere que cada moneda valga >= 1 (vía --smt).
+nat N, V;
+array<nat> moneda;
+requires forall k: moneda[k] >= 1;
+
+ways(i, 0) = 1;
+ways(0, v) = 0;
+ways(i, v) = ways(i-1, v) if moneda[i] > v;
+ways(i, v) = ways(i-1, v) + ways(i, v - moneda[i]) if moneda[i] <= v;
+
+return ways(N, V);

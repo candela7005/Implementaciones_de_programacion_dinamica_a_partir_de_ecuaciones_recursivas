@@ -1,0 +1,13 @@
+// Problema de la mochila 0/1
+// Convención de índices 1-based: v[1..N], w[1..N] (posición 0 centinela;
+// arrays de tamaño N+1). W es la capacidad.
+nat N;
+nat W;
+array<nat> v, w;
+
+mochila(0, c) = 0;
+mochila(i, 0) = 0;
+mochila(i, c) = mochila(i - 1, c) if w[i] > c;
+mochila(i, c) = max{ mochila(i - 1, c), v[i] + mochila(i - 1, c - w[i]) } if w[i] <= c;
+
+return mochila(N, W);
