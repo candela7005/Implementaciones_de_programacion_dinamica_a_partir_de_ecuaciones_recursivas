@@ -120,6 +120,27 @@ class TestPrecondiciones(unittest.TestCase):
         ok2, _ = validar_entrada(_leer("monedas.dp"))
         self.assertFalse(ok2, "monedas debería rechazarse sin --smt (terminación)")
 
+    def test_filtro_acota_indice_no_lineal(self):
+        # El filtro de una reducción se pasa EN CRUDO a Z3 (como la guarda y las
+        # precondiciones), de modo que su parte no afín sirve para acotar índices.
+        # Aquí g termina con μ = i (lineal, sin el filtro), pero el 2.º índice de
+        # la llamada recursiva es a[k] (no lineal): su cota a[k] <= M se sigue
+        # SOLO del filtro a[k] <= j con el invariante j <= M. Lo único que cambia
+        # entre las dos fuentes es el filtro, así que aislamos su efecto.
+        con_filtro = (
+            "nat N, M;\n"
+            "array<nat> a;\n"
+            "g(0, j) = 0;\n"
+            "g(i, j) = max{1 <= k <= M : a[k] <= j}( g(i - 1, a[k]) ) if i > 0;\n"
+            "return g(N, M);\n"
+        )
+        sin_filtro = con_filtro.replace(" : a[k] <= j", "")
+        ok_con, salida = validar_entrada(con_filtro, usar_smt=True)
+        self.assertTrue(ok_con, f"con filtro debería aceptarse:\n{salida}")
+        ok_sin, salida2 = validar_entrada(sin_filtro, usar_smt=True)
+        self.assertFalse(ok_sin, "sin filtro a[k] no está acotado: debe rechazarse")
+        self.assertIn("Índices fuera de rango", salida2)
+
 
 @unittest.skipUnless(codigoPD.Z3_DISPONIBLE, "z3 no está instalado")
 @unittest.skipUnless(casos.compilador_disponible(), "no hay compilador C++")

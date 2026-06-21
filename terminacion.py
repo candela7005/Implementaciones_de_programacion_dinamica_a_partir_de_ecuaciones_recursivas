@@ -10,16 +10,23 @@ from modelo import *
 # Reemplaza las heurísticas de la versión anterior (`_verifica_convergencia_
 # relacional`, `obtener_modificacion`) por un esquema formal:
 #
-#   - Se enuncia una función de cota   μ : (params formales) → ℕ
-#   - Para cada llamada recursiva en el cuerpo de cada ecuación se genera
-#     una obligación: bajo las hipótesis del caso (condiciones implícitas
-#     del LHS, condición explícita del `if`, negación de las condiciones
-#     de los casos anteriores y restricciones del rango si la llamada está
-#     dentro de una reducción min/max), se debe cumplir
-#         μ(actuales) - μ(recursivos) ≥ 1     (decrecimiento estricto)
-#         μ(actuales) ≥ 0                     (acotación inferior)
-#   - Las obligaciones se descargan con un solver lineal propio
-#     (Fourier–Motzkin reducido + búsqueda de combinación no negativa).
+#   - Se enuncia una función de cota afín   μ : (params formales) → ℤ
+#   - Para cada llamada recursiva P → Pᵢ del cuerpo de cada ecuación se genera
+#     una obligación: bajo las hipótesis del caso (condiciones implícitas del
+#     LHS, condición explícita del `if`, negación de las condiciones de los
+#     casos anteriores y restricciones del rango/filtro si la llamada está
+#     dentro de una reducción min/max), se debe cumplir el decrecimiento
+#     estricto   μ(P) > μ(Pᵢ)   que, sobre los enteros, se traduce a
+#         μ(P) - μ(Pᵢ) - 1 ≥ 0
+#     (el solver lineal solo maneja desigualdades no estrictas ≥).
+#   - NO se exige μ ≥ 0: la terminación no descansa en que μ caiga en ℕ, sino en
+#     que el dominio de estados es FINITO, lo cual lo garantiza la verificación
+#     de índices al acotar cada parámetro (0 ≤ x_k ≤ S_k). Sobre un dominio
+#     finito, un μ que decrece estrictamente en cada transición no admite
+#     cadenas infinitas (un ciclo repetiría el valor de μ, contra el
+#     decrecimiento; y sin ciclos un dominio finito no tiene camino infinito).
+#   - Las obligaciones se descargan con un solver lineal propio (Fourier–Motzkin
+#     reducido + búsqueda de combinación no negativa) o, con --smt, con Z3.
 #
 # Las clases viven aquí porque no dependen de SemanticChecks ni del codegen.
 
@@ -213,14 +220,13 @@ def negar_condicion(cond, sus: Optional[Dict[str, str]] = None) -> List[Restricc
 class Obligacion:
     """Obligación ``hipotesis ⊨ goal``.
 
-    ``goal`` es ``meta_expr >= 0``. Para el decrecimiento estricto:
-    ``meta_expr = μ(actuales) - μ(recursivos) - 1``. Para la acotación:
-    ``meta_expr = μ(actuales)``.
+    ``goal`` es ``meta_expr >= 0``. Para el decrecimiento estricto μ(P) > μ(Pᵢ),
+    sobre los enteros, ``meta_expr = μ(actuales) - μ(recursivos) - 1``.
     """
     descripcion: str
     hipotesis: List[Restriccion]
     meta_expr: LinearExpr  # debe demostrarse >= 0
-    nombre: str            # 'decrecimiento' | 'cota >= 0'
+    nombre: str            # 'decrecimiento'
 
 
 # ---------------------------------------------------------------------------
@@ -327,27 +333,33 @@ class TerminacionRecolectora:
     def _llamadas_recursivas(
         self,
         nodo: Expresion,
-        rangos_activos: List[Rango],
+        hyps_activas: List[Restriccion],
         sus: Dict[str, str],
-    ) -> Iterable[Tuple[Llamada, List[Restriccion]]]:
-        """Itera (llamada_recursiva, hipótesis_extra_por_estar_en_rangos).
+        filtros_activos: Tuple[Expresion, ...] = (),
+    ) -> Iterable[Tuple[Llamada, List[Restriccion], Tuple[Expresion, ...]]]:
+        """Itera (llamada_recursiva, hipótesis_lineales, filtros_en_crudo).
 
-        Las llamadas dentro de un `min{i ≤ k < j}(...)` heredan como hipótesis
-        las desigualdades del rango (lim_inf ≤ k, k op lim_sup).
+        Una llamada dentro de `min{i ≤ k < j : phi}(...)` hereda las cotas del
+        rango y la parte lineal de `phi` en `hyps_activas`, y además el propio
+        `phi` sin linealizar en `filtros_activos`. Esto último lo aprovecha la
+        vía Z3, que sí traduce un filtro no afín (p. ej. `a[k] < a[i]`) con la
+        teoría de arrays. El cuerpo solo se evalúa para los `k` que cumplen el
+        filtro, así que suponerlo al razonar sobre esas llamadas es correcto.
         """
         match nodo:
             case Llamada(nombre=n) if n == self.nombre_func:
-                yield nodo, self._hipotesis_de_rangos(rangos_activos, sus)
+                yield nodo, hyps_activas, filtros_activos
             case OperacionBinaria(izq=izq, der=der):
-                yield from self._llamadas_recursivas(izq, rangos_activos, sus)
-                yield from self._llamadas_recursivas(der, rangos_activos, sus)
-            case Reduccion(rango=rg, argumentos=args):
-                nuevos = rangos_activos + ([rg] if rg is not None else [])
+                yield from self._llamadas_recursivas(izq, hyps_activas, sus, filtros_activos)
+                yield from self._llamadas_recursivas(der, hyps_activas, sus, filtros_activos)
+            case Reduccion(rango=rg, argumentos=args, filtro=filtro):
+                extra = hyps_activas + self._hipotesis_de_reduccion(rg, filtro, sus)
+                fnuevos = filtros_activos + ((filtro,) if filtro is not None else ())
                 for a in args:
-                    yield from self._llamadas_recursivas(a, nuevos, sus)
+                    yield from self._llamadas_recursivas(a, extra, sus, fnuevos)
             case Llamada(argumentos=args):  # llamadas no recursivas (raras): seguimos
                 for a in args:
-                    yield from self._llamadas_recursivas(a, rangos_activos, sus)
+                    yield from self._llamadas_recursivas(a, hyps_activas, sus, filtros_activos)
             case _:
                 return
 
@@ -367,6 +379,18 @@ class TerminacionRecolectora:
                     hyps.append(Restriccion(sup - LinearExpr.variable(it), ">="))
                 else:               # it < sup   ↔  sup - it - 1 >= 0
                     hyps.append(Restriccion(sup - LinearExpr.variable(it) - LinearExpr.constante(1), ">="))
+        return hyps
+
+    def _hipotesis_de_reduccion(self, rango, filtro, sus: Dict[str, str]) -> List[Restriccion]:
+        """Hipótesis que una reducción `min{rango : filtro}(...)` aporta a las
+        llamadas y accesos de su cuerpo: las cotas del rango y, si hay filtro,
+        sus restricciones lineales (el cuerpo solo se evalúa para los `k` que
+        cumplen el filtro). Las partes no lineales del filtro —p. ej. `a[k] <
+        a[i]`— las descarta `restricciones_de_condicion`, lo que es seguro:
+        omitir una hipótesis nunca produce una conclusión incorrecta."""
+        hyps = self._hipotesis_de_rangos([rango], sus) if rango is not None else []
+        if filtro is not None:
+            hyps = hyps + restricciones_de_condicion(filtro, sus)
         return hyps
 
     def _hipotesis_tipos_nat(self) -> List[Restriccion]:
@@ -391,7 +415,7 @@ class TerminacionRecolectora:
 
             hyps_caso = hyps_globales + restr_lhs + cond_explicita + hyps_negaciones
 
-            for llamada_rec, hyps_rango in self._llamadas_recursivas(eq.der, [], renombrado):
+            for llamada_rec, hyps_rango, _ in self._llamadas_recursivas(eq.der, [], renombrado):
                 hyps_total = hyps_caso + hyps_rango
                 # μ(actuales): los parámetros formales mismos (sin renombrar:
                 # μ está expresada sobre los formales).
@@ -435,19 +459,15 @@ class TerminacionRecolectora:
                     f"llamada {self.nombre_func}({', '.join(args_descripcion)})"
                 )
 
-                # Decrecimiento estricto: μ(actuales) - μ(rec) - 1 >= 0
+                # Decrecimiento estricto μ(actuales) > μ(rec); sobre ℤ se traduce
+                # a μ(actuales) - μ(rec) - 1 >= 0. No se añade una obligación de
+                # acotación μ ≥ 0: la terminación sale de este decrecimiento sobre
+                # el dominio finito que garantiza la verificación de índices.
                 obligaciones.append(Obligacion(
                     descripcion=desc,
                     hipotesis=hyps_total,
                     meta_expr=(mu_actual - mu_rec) - LinearExpr.constante(1),
                     nombre="decrecimiento",
-                ))
-                # Acotación: μ(actuales) >= 0
-                obligaciones.append(Obligacion(
-                    descripcion=desc,
-                    hipotesis=hyps_total,
-                    meta_expr=mu_actual,
-                    nombre="cota >= 0",
                 ))
 
             anteriores.append((restr_lhs, eq.condicion, renombrado))
@@ -852,7 +872,7 @@ def _z3_refuta(hipotesis, meta_z3) -> bool:
 def _terminacion_con_precondiciones_z3(programa: ProgramaDP, rec: "TerminacionRecolectora"):
     """Análisis de terminación vía Z3, aprovechando las precondiciones. Prueba
     los mismos candidatos de cota y, por cada llamada recursiva, comprueba en
-    Z3 el decrecimiento y la acotación, con las precondiciones como hipótesis."""
+    Z3 el decrecimiento estricto de μ, con las precondiciones como hipótesis."""
     for mu in _candidatos_cota(rec.parametros):
         if _mu_valida_z3(rec, mu, programa.precondiciones):
             return mu, []
@@ -864,7 +884,7 @@ def _terminacion_con_precondiciones_z3(programa: ProgramaDP, rec: "TerminacionRe
 
 def _mu_valida_z3(rec: "TerminacionRecolectora", mu: LinearExpr,
                   precondiciones: List[Precondicion]) -> bool:
-    """¿Cumple μ el decrecimiento y la acotación en todas las llamadas, usando
+    """¿Cumple μ el decrecimiento estricto en todas las llamadas, usando
     Z3 y las precondiciones?"""
     anteriores = []
     nat = rec._hipotesis_tipos_nat()
@@ -873,7 +893,7 @@ def _mu_valida_z3(rec: "TerminacionRecolectora", mu: LinearExpr,
         cond = restricciones_de_condicion(eq.condicion, ren)
         neg = rec._hipotesis_negacion_anteriores(anteriores)
         hyps_lin = nat + restr_lhs + cond + neg
-        for llamada, hyps_rg in rec._llamadas_recursivas(eq.der, [], ren):
+        for llamada, hyps_rg, _ in rec._llamadas_recursivas(eq.der, [], ren):
             if not _comprueba_llamada_z3(rec, mu, llamada, hyps_lin + hyps_rg, eq, precondiciones):
                 return False
         anteriores.append((restr_lhs, eq.condicion, ren))
@@ -897,9 +917,10 @@ def _comprueba_llamada_z3(rec, mu, llamada, hyps_lin, eq, precondiciones) -> boo
     mu_actual = _mu_a_z3(mu, rec.parametros, formales_como_args, ints, arrays)
     mu_sig = _mu_a_z3(mu, rec.parametros, llamada.argumentos, ints, arrays)
 
-    decrece = _z3_valida(hyps, (mu_actual - mu_sig) - 1)   # μ_act − μ_sig − 1 ≥ 0
-    acotada = _z3_valida(hyps, mu_actual)                  # μ_act ≥ 0
-    return decrece and acotada
+    # Decrecimiento estricto μ(actual) > μ(siguiente); sobre ℤ, μ_act − μ_sig − 1 ≥ 0.
+    # No se exige μ ≥ 0 (la terminación sale del decrecimiento sobre el dominio
+    # finito que acota la verificación de índices), igual que en el solver propio.
+    return _z3_valida(hyps, (mu_actual - mu_sig) - 1)
 
 
 def _mu_a_z3(mu: LinearExpr, parametros: List[str], args, ints: dict, arrays: dict):
@@ -943,14 +964,13 @@ class VerificadorIndices:
         }
         self.cotas_inf = self._cotas_inferiores()  # cota inferior inductiva por parámetro
         self.precondiciones = programa.precondiciones
-        # Bajo --smt (verificadora Z3) se intentan demostrar TAMBIÉN los índices
-        # NO lineales (dependientes de los datos, p. ej. c - w[i]): requiere
-        # teoría de arrays y, si las hay, las precondiciones. El solver propio no
-        # entra en esto (no representa arrays), así que con él se omiten.
-        self._smt_arrays = (
-            Z3_DISPONIBLE
-            and isinstance(self.verificadora, VerificadoraSMT)
-        )
+        # Los índices NO afines (dependientes de los datos, p. ej. c - w[i], o
+        # con productos de variables) no los representa el solver propio. Se
+        # delegan SIEMPRE a Z3 cuando está disponible —con o sin --smt—, porque
+        # que un índice sea no afín es propio de la recurrencia, no una opción del
+        # usuario. Si Z3 no está instalado no se pueden verificar: se rechaza el
+        # programa, en lugar de aceptarlo sin comprobar el acceso.
+        self._z3_indices = Z3_DISPONIBLE
 
     def _prueba(self, hipotesis: List[Restriccion], meta: LinearExpr) -> bool:
         """Descarga la obligación  (⋀ hipótesis) ⊨ (meta ≥ 0)  con el verificador
@@ -1006,7 +1026,7 @@ class VerificadorIndices:
                         + restricciones_de_condicion(eq.condicion, ren)
                         + self.rec._hipotesis_negacion_anteriores(anteriores)
                         + invariante_local())
-                for llamada, hyps_rg in self.rec._llamadas_recursivas(eq.der, [], ren):
+                for llamada, hyps_rg, _ in self.rec._llamadas_recursivas(eq.der, [], ren):
                     for k, p in enumerate(self.parametros):
                         if L[p] == 0 or k >= len(llamada.argumentos):
                             continue
@@ -1020,30 +1040,34 @@ class VerificadorIndices:
 
     # -- recorrido de accesos a arrays ------------------------------------
 
-    def _accesos_array(self, nodo, rangos: List[Rango], sus: Dict[str, str]):
-        """Itera (lista_de_índices, hipótesis_de_rango) por cada acceso a un
-        array declarado."""
+    def _accesos_array(self, nodo, hyps: List[Restriccion], sus: Dict[str, str], filtros=()):
+        """Itera (lista_de_índices, hipótesis_lineales, filtros_en_crudo) por
+        cada acceso a un array declarado. Acumula las cotas de los rangos y la
+        parte lineal de los filtros en `hyps`, y los filtros sin linealizar en
+        `filtros` (para la vía Z3), de las reducciones que envuelven el acceso."""
         match nodo:
             case Variable(nombre=n, indices=idxs) if idxs and n in self.arrays:
-                yield list(idxs), self.rec._hipotesis_de_rangos(rangos, sus)
+                yield list(idxs), hyps, filtros
                 for ix in idxs:
-                    yield from self._accesos_array(ix, rangos, sus)
+                    yield from self._accesos_array(ix, hyps, sus, filtros)
             case Variable(indices=idxs):
                 for ix in idxs:
-                    yield from self._accesos_array(ix, rangos, sus)
+                    yield from self._accesos_array(ix, hyps, sus, filtros)
             case OperacionBinaria(izq=izq, der=der):
-                yield from self._accesos_array(izq, rangos, sus)
-                yield from self._accesos_array(der, rangos, sus)
+                yield from self._accesos_array(izq, hyps, sus, filtros)
+                yield from self._accesos_array(der, hyps, sus, filtros)
             case Llamada(argumentos=args):
                 for a in args:
-                    yield from self._accesos_array(a, rangos, sus)
-            case Reduccion(rango=rg, argumentos=args):
-                nuevos = rangos + ([rg] if rg is not None else [])
+                    yield from self._accesos_array(a, hyps, sus, filtros)
+            case Reduccion(rango=rg, argumentos=args, filtro=filtro):
+                extra = hyps + self.rec._hipotesis_de_reduccion(rg, filtro, sus)
+                fnuevos = filtros + ((filtro,) if filtro is not None else ())
                 if rg is not None:
-                    yield from self._accesos_array(rg.limite_inf, rangos, sus)
-                    yield from self._accesos_array(rg.limite_sup, rangos, sus)
+                    # los límites del rango no caen bajo su propio rango/filtro
+                    yield from self._accesos_array(rg.limite_inf, hyps, sus, filtros)
+                    yield from self._accesos_array(rg.limite_sup, hyps, sus, filtros)
                 for a in args:
-                    yield from self._accesos_array(a, nuevos, sus)
+                    yield from self._accesos_array(a, extra, sus, fnuevos)
             case _:
                 return
 
@@ -1062,33 +1086,88 @@ class VerificadorIndices:
             hyps_caso = invariante + restr_lhs + cond + neg
 
             # (a) Índices de la tabla: cada llamada recursiva debe caer en rango.
-            for llamada, hyps_rg in self.rec._llamadas_recursivas(eq.der, [], ren):
-                self._chequear_llamada(llamada, hyps_caso + hyps_rg, ren, avisos, eq.condicion)
+            for llamada, hyps_rg, filtros_rg in self.rec._llamadas_recursivas(eq.der, [], ren):
+                self._chequear_llamada(llamada, hyps_caso + hyps_rg, ren, avisos, eq.condicion, filtros_rg)
 
             # (b) Índices de arrays: cota inferior (≥ 0).
-            for indices, hyps_rg in self._accesos_array(eq.der, [], ren):
+            for indices, hyps_rg, filtros_rg in self._accesos_array(eq.der, [], ren):
                 for idx in indices:
-                    self._chequear_array(idx, hyps_caso + hyps_rg, ren, avisos, eq.condicion)
+                    self._chequear_array(idx, hyps_caso + hyps_rg, ren, avisos, eq.condicion, filtros_rg)
 
             anteriores.append((restr_lhs, eq.condicion, ren))
 
+        # (c) Llamada inicial: el estado de partida también debe caer en el
+        # dominio natural (cada argumento ≥ 0). Es la base de la inducción del
+        # invariante; sin ella, una llamada como f(-1) —que no termina— se
+        # aceptaría.
+        self._chequear_inicial(avisos)
+
         return avisos
 
+    def _chequear_inicial(self, avisos: List[str]) -> None:
+        """La llamada inicial fija el estado de partida de la recursión, así que
+        debe caer en el dominio natural: cada argumento ha de ser ≥ 0. Las
+        llamadas recursivas se comprueban SUPONIENDO que la celda actual está en
+        rango (el invariante inductivo); esta comprobación cierra la base de esa
+        inducción. Sin ella, una llamada inicial como f(-1) —que desciende a
+        f(-2), f(-3), … sin alcanzar nunca un caso base— se aceptaría.
+
+        Las hipótesis son las de los datos: cada escalar `nat` declarado es ≥ 0,
+        más las precondiciones no cuantificadas. Solo se comprueba la cota
+        inferior; la superior la fija la propia llamada inicial, de la que salen
+        los tamaños de la tabla."""
+        hyps: List[Restriccion] = []
+        for d in self.programa.declaraciones:
+            if isinstance(d.tipo, BasicType) and d.tipo.clase == BasicKind.NAT:
+                hyps.append(Restriccion(LinearExpr.variable(d.nombre), ">="))
+        for pc in self.programa.precondiciones:
+            if pc.cuantificador is None:
+                hyps += restricciones_de_condicion(pc.expr, {})
+
+        for k, arg in enumerate(self.programa.retorno.argumentos):
+            e = expr_a_lineal(arg, {})
+            if e is None:
+                # Argumento inicial no afín (raro). Se refuta con Z3 si está
+                # disponible; si no, no se puede verificar y se rechaza.
+                if self._z3_indices:
+                    viol = self._refutar_indice_z3(arg, hyps, {}, None, cota_sup_k=None)
+                    if viol:
+                        avisos.append(
+                            f"no se pudo demostrar que el argumento {k} de la "
+                            f"llamada inicial sea {viol}"
+                        )
+                else:
+                    avisos.append(
+                        f"el argumento {k} de la llamada inicial no es afín y "
+                        f"requiere z3-solver para verificarse (no instalado)"
+                    )
+                continue
+            if not self._prueba(hyps, e):
+                avisos.append(
+                    f"no se pudo demostrar que el argumento {k} de la llamada "
+                    f"inicial sea ≥ 0"
+                )
+
     def _chequear_llamada(self, llamada: Llamada, hyps, ren, avisos: List[str],
-                          guarda=None) -> None:
+                          guarda=None, filtros=()) -> None:
         for k, arg in enumerate(llamada.argumentos):
             e = expr_a_lineal(arg, ren)
             if e is None:
-                # Índice no lineal (depende de los datos, p. ej. c - w[i]). Bajo
-                # --smt se intenta refutar con Z3 (teoría de arrays); con el solver
-                # propio queda fuera del fragmento decidible y se omite.
-                if self._smt_arrays:
-                    viol = self._refutar_indice_z3(arg, hyps, ren, guarda, cota_sup_k=k)
+                # Índice no afín (depende de los datos, p. ej. c - w[i], o con
+                # productos de variables). Se refuta con Z3 (teoría de arrays) si
+                # está disponible; si no, no se puede verificar y se rechaza.
+                if self._z3_indices:
+                    viol = self._refutar_indice_z3(arg, hyps, ren, guarda, cota_sup_k=k, filtros=filtros)
                     if viol:
                         avisos.append(
                             f"no se pudo demostrar que el índice {k} de "
                             f"{_pp_lhs(llamada, self.parametros)} sea {viol}"
                         )
+                else:
+                    avisos.append(
+                        f"el índice {k} de {_pp_lhs(llamada, self.parametros)} no es "
+                        f"afín y requiere z3-solver para verificarse (no instalado)"
+                    )
                 continue
             # cota inferior  e ≥ 0
             if not self._prueba(hyps, e):
@@ -1104,13 +1183,18 @@ class VerificadorIndices:
                     f"{_pp_lhs(llamada, self.parametros)} sea ≤ {self.tamanos[k]}"
                 )
 
-    def _chequear_array(self, idx, hyps, ren, avisos: List[str], guarda=None) -> None:
+    def _chequear_array(self, idx, hyps, ren, avisos: List[str], guarda=None, filtros=()) -> None:
         e = expr_a_lineal(idx, ren)
         if e is None:
-            if self._smt_arrays:
-                viol = self._refutar_indice_z3(idx, hyps, ren, guarda, cota_sup_k=None)
+            if self._z3_indices:
+                viol = self._refutar_indice_z3(idx, hyps, ren, guarda, cota_sup_k=None, filtros=filtros)
                 if viol:
                     avisos.append(f"no se pudo demostrar que un índice de array sea {viol}")
+            else:
+                avisos.append(
+                    "un índice de array no es afín y requiere z3-solver para "
+                    "verificarse (no instalado)"
+                )
             return
         if not self._prueba(hyps, e):
             avisos.append(f"no se pudo demostrar que el índice de array '{e}' sea ≥ 0")
@@ -1147,12 +1231,14 @@ class VerificadorIndices:
             extra.append(_z3.ForAll(poss, sel >= 0))
         return extra
 
-    def _refutar_indice_z3(self, arg, hyps_lin, ren, guarda, cota_sup_k):
+    def _refutar_indice_z3(self, arg, hyps_lin, ren, guarda, cota_sup_k, filtros=()):
         """Devuelve un texto ("≥ 0" / "≤ S") si Z3 exhibe un contraejemplo de
         que el índice `arg` esté en rango, o None si no puede refutarlo. Reúne
         como hipótesis: la no negatividad de los arrays nat, las hipótesis
         lineales del caso, la guarda completa del `if` (con su parte no lineal,
-        p. ej. moneda[i] ≤ v) y las precondiciones (`requires`)."""
+        p. ej. moneda[i] ≤ v), las precondiciones (`requires`) y los filtros en
+        crudo de las reducciones que envuelven el acceso (con su parte no afín,
+        p. ej. a[k] ≤ j), que aquí sí se pueden usar con la teoría de arrays."""
         try:
             ints: dict = {}
             arrays: dict = {}
@@ -1160,6 +1246,8 @@ class VerificadorIndices:
             hyps += [_restriccion_a_z3(h, ints) for h in hyps_lin]
             if guarda is not None:
                 hyps.append(_ast_a_z3(guarda, ints, arrays, ren))
+            for f in filtros:
+                hyps.append(_ast_a_z3(f, ints, arrays, ren))
             for pc in self.precondiciones:
                 hyps.append(_precondicion_a_z3(pc, ints, arrays))
             idx = _ast_a_z3(arg, ints, arrays, ren)

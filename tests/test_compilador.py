@@ -104,6 +104,21 @@ class TestIndices(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Índices fuera de rango", salida)
 
+    def test_detecta_llamada_inicial_negativa(self):
+        # La llamada inicial f(-1) no termina (baja a f(-2), f(-3), ... sin tocar
+        # nunca el caso base f(0)); debe detectarse aunque las ecuaciones, por sí
+        # solas, sean correctas. Es la base de la inducción del invariante.
+        fuente = (
+            "nat N;\n"
+            "f(0) = 0;\n"
+            "f(n) = f(n-1) + 1;\n"
+            "return f(0 - 1);\n"
+        )
+        self.assertTrue(self._avisos(fuente))
+        ok, salida = validar_entrada(fuente)
+        self.assertFalse(ok)
+        self.assertIn("Índices fuera de rango", salida)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

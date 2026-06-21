@@ -45,14 +45,14 @@ def validar_entrada(codigo: str, modo: str = "funcion", algoritmo: str = "top-do
     # Verificación de índices fuera de rango (BLOQUEANTE). Gracias a la
     # inferencia de cotas inferiores no produce falsos positivos en las
     # familias estándar, así que una violación se trata como error y detiene
-    # la generación. Con el solver propio por defecto, o con Z3 si --smt.
+    # la generación. Los índices afines los comprueba el solver propio; los no
+    # afines (dependientes de los datos) se delegan a Z3 si está disponible.
     verif = VerificadoraSMT() if usar_smt else TerminacionVerificadora()
     avisos_idx = VerificadorIndices(tree, verif).analizar()
     if avisos_idx:
-        motor = "Z3" if usar_smt else "solver propio"
         detalle = "\n".join(f"  - {a}" for a in avisos_idx)
-        return False, (f"[Índices fuera de rango] ({motor}) la recurrencia puede "
-                       f"acceder fuera de rango:\n{detalle}")
+        return False, ("[Índices fuera de rango] no se ha podido garantizar que "
+                       f"todos los accesos estén en rango:\n{detalle}")
 
     try:
         if reconstruir:

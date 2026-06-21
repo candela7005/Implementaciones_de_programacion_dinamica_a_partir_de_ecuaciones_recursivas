@@ -22,7 +22,9 @@ Desarrollado como Trabajo de Fin de Grado en Matemáticas (UCM).
 
 - Python 3.10 o superior
 - [`lark`](https://github.com/lark-parser/lark) (analizador sintáctico): `pip install lark`
-- Opcional, para `--smt`: `pip install z3-solver`
+- [`z3-solver`](https://pypi.org/project/z3-solver/) (`pip install z3-solver`): necesario para
+  las recurrencias con índices que dependen de los datos (como la mochila) y para la opción
+  `--smt`. Sin él, esos problemas se rechazan con un mensaje en lugar de aceptarse sin verificar.
 - Un compilador de C++ (g++ o MSVC) para compilar el código generado
 
 ## Uso
@@ -47,7 +49,7 @@ python codigoPD.py mi_problema.dp --algoritmo bottom-up --gen clase --reconstrui
 | `--gen` | `funcion` / `clase` | `funcion` | estilo de la salida |
 | `--space-opt` | (bandera) | — | optimización de espacio (solo con `bottom-up`) |
 | `--reconstruir` | (bandera) | — | reconstruye también la solución óptima |
-| `--smt` | (bandera) | — | verifica con Z3; necesario para recurrencias con precondiciones o índices que dependen de los datos |
+| `--smt` | (bandera) | — | usa Z3 con las precondiciones al probar la terminación (p. ej. el cambio de monedas). Los índices que dependen de los datos ya se verifican con Z3 sin este flag |
 | `--out`, `-o` | fichero | stdout | dónde escribir el C++ |
 
 ### El DSL
