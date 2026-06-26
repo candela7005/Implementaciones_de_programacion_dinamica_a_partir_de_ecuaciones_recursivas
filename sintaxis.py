@@ -13,7 +13,7 @@ programa        : declaraciones precondiciones ecuaciones inicial
 declaraciones   : (declaracion)*
 precondiciones  : (precondicion)*
 ecuaciones      : (ecuacion)+
-inicial         : "return" llamada ";"
+inicial         : "return" (reduccion | llamada) ";"
 
 declaracion     : tipo IDENT ("," IDENT)? ";"
 precondicion    : "requires" pre ";"

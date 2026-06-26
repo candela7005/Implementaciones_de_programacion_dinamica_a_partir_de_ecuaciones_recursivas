@@ -42,6 +42,7 @@ class CodeGenerator:
         self.arrays_all: List[Declaracion] = []
         self.scalars_all: List[Declaracion] = []
         self.datos_ref: List[Declaracion] = []  # declaraciones referenciadas en los cuerpos
+        self._memoizar_base = False  # guardar también los casos base en la memo
 
     def emitir(self, linea: str) -> None:
         """Añade una línea con la indentación actual."""
@@ -51,12 +52,13 @@ class CodeGenerator:
         """Calcula el estado común a todos los generadores: nombre de la
         función, parámetros formales, datos (arrays/escalares) y qué datos
         están realmente referenciados en los cuerpos."""
-        self.nombre_func = programa.retorno.nombre
+        self.nombre_func = programa.llamada_inicial.nombre
         self.nombres_params = self._inferir_params_formales(programa)
         self.arrays_all = [d for d in programa.declaraciones if isinstance(d.tipo, ArrayType)]
         self.scalars_all = [d for d in programa.declaraciones if isinstance(d.tipo, BasicType)]
         referenciados = self._recolectar_referenciados(programa)
         self.datos_ref = [d for d in programa.declaraciones if d.nombre in referenciados]
+        self._comprobar_indice_base1(programa)
 
     def _emitir_includes(self) -> None:
         """Bibliotecas (sin <iostream>: ya no se genera I/O ni main)."""
@@ -96,6 +98,58 @@ class CodeGenerator:
                 mejor_distintos = distintos
                 nombres = vars_en_izq
         return nombres
+
+    def _tiene_reduccion_con_rango(self, programa: ProgramaDP) -> bool:
+        """True si alguna ecuación contiene una reducción con rango (`min{i<=k<j}`),
+        es decir, un DP de intervalos."""
+        encontrado = False
+
+        def walk(n):
+            nonlocal encontrado
+            match n:
+                case Reduccion(rango=rg, argumentos=args):
+                    if rg is not None:
+                        encontrado = True
+                    for a in args:
+                        walk(a)
+                case OperacionBinaria(izq=i, der=d):
+                    walk(i); walk(d)
+                case Llamada(argumentos=args):
+                    for a in args:
+                        walk(a)
+                case _:
+                    pass
+
+        for eq in programa.ecuaciones:
+            walk(eq.der)
+        return encontrado
+
+    def _comprobar_indice_base1(self, programa: ProgramaDP) -> None:
+        """Aborta la generación si un DP de intervalos arranca en la posición 0.
+
+        El llenado por longitud de intervalo es base-1: empieza en `i = 1` y la
+        posición 0 queda reservada (centinela de los datos y celda que el bucle
+        no rellena). Una recurrencia como `ebanisto(i, i + 1)` con retorno
+        `ebanisto(0, N)` necesita la celda (0, N), que nunca se calcula, de modo
+        que el código sería incorrecto. Se avisa en lugar de generarlo. (Los DP
+        monótonos sí recorren la posición 0 —es la celda del caso base, p. ej.
+        `mochila(0, c)`—, así que la comprobación se limita a los intervalos.)"""
+        if not self._tiene_reduccion_con_rango(programa):
+            return
+        rep = programa.llamada_inicial
+        for arg in rep.argumentos:
+            if isinstance(arg, Numero) and arg.valor == 0:
+                llamada = (f"{rep.nombre}("
+                           + ", ".join(self.visit_Expresion(a)
+                                       for a in rep.argumentos)
+                           + ")")
+                raise ValueError(
+                    f"[No soportado] La llamada inicial '{llamada}' usa la "
+                    "posición 0, pero los DP de intervalos se indexan en base 1 "
+                    "(el llenado por longitud de intervalo empieza en 1 y la "
+                    "posición 0 queda reservada como centinela). Reformula la "
+                    "recurrencia con índices desde 1 (p. ej. las marcas en "
+                    "1..N+1 y el retorno en la celda (1, …)).")
 
     def _recolectar_referenciados(self, programa: ProgramaDP) -> set:
         """Identificadores declarados que aparecen en los cuerpos o condiciones
@@ -184,10 +238,10 @@ class CodeGenerator:
         tipo_memo = self._obtener_tipo_vector(len(self.nombres_params))
         self.emitir(f"{tipo_memo} memo;")
         self._generar_init_memo(programa)
-        datos = [d.nombre for d in self.datos_ref]
-        args_iniciales = [self.visit_Expresion(a) for a in programa.retorno.argumentos]
-        llamada = ", ".join(datos + args_iniciales + ["memo"])
-        self.emitir(f"return {self.nombre_func}({llamada});")
+        # El retorno se traduce con visit_Expresion: una llamada f(args) se
+        # vuelve la recursión inicial; un retorno agregado max/min{...}(f(k)) se
+        # vuelve el bucle que recorre las celdas (cada una rellena la memo).
+        self.emitir(f"return {self.visit_Expresion(programa.retorno)};")
         self.indent_level -= 1
         self.emitir("}")
 
@@ -225,18 +279,28 @@ class CodeGenerator:
         self.emitir("}")
         self.emitir("")
 
-        # operator(): lanza la recursión con los parámetros de la recurrencia.
+        # operator(): con retorno agregado max/min{...}, sin argumentos y
+        # devuelve el agregado sobre las celdas; si no, toma los parámetros de
+        # la recurrencia y lanza la recursión en esa celda.
+        self._emitir_operator_recursion(programa)
+
+        self.indent_level -= 1
+        self.emitir("};")
+
+    def _emitir_operator_recursion(self, programa: ProgramaDP) -> None:
+        """operator() de las clases que resuelven por recursión (`resolver`)."""
+        if programa.retorno_agregado:
+            self.emitir(f"int operator()() {{ return {self.visit_Expresion(programa.retorno)}; }}")
+            return
         op_params = ", ".join(f"int {p}" for p in self.nombres_params)
-        args_canonicos = ", ".join(self.visit_Expresion(a) for a in programa.retorno.argumentos)
+        args_canonicos = ", ".join(self.visit_Expresion(a)
+                                   for a in programa.llamada_inicial.argumentos)
         self.emitir(f"int operator()({op_params}) {{")
         self.indent_level += 1
         self.emitir(f"// Llamada canónica del problema: ({args_canonicos})")
         self.emitir(f"return resolver({', '.join(self.nombres_params)});")
         self.indent_level -= 1
         self.emitir("}")
-
-        self.indent_level -= 1
-        self.emitir("};")
 
     def _generar_cuerpo_resolucion(self, programa: ProgramaDP, memoizar: bool = True) -> None:
         """Cuerpo común (casos base, recursión, return) compartido por el helper
@@ -388,6 +452,10 @@ class CodeGenerator:
             condiciones.append(self.visit_Expresion(eq.condicion))
 
         der_str = self.visit_Expresion(eq.der)
+        # En la reconstrucción descendente, el caso base se guarda también en la
+        # memo, para que el recorrido pueda leer esas celdas.
+        if self._memoizar_base:
+            der_str = f"{self._generar_acceso_memo_local()} = {der_str}"
         if condiciones:
             cond_str = " && ".join(condiciones)
             self.emitir(f"if ({cond_str}) return {der_str};")
@@ -396,15 +464,18 @@ class CodeGenerator:
 
     def _condiciones_implicitas(self, eq) -> list:
         """Extrae las condiciones implícitas del lado izquierdo de una ecuación.
-        Ej: f(0, c) → ['i == 0'];   f(i, i) → ['j == i']."""
+        Un argumento que es el propio parámetro formal (`f(i, j)`) no impone
+        condición; en cualquier otro caso se traduce a una igualdad
+        `param == arg`: constante (`f(0, c)` → `i == 0`), otra variable
+        (`f(i, i)` → `j == i`) o una expresión sencilla (`f(i, i+1)` →
+        `j == (i + 1)`)."""
         condiciones = []
-        for i, arg in enumerate(eq.izq.argumentos):
-            param_formal = self.nombres_params[i]
-            match arg:
-                case Numero(valor=v):
-                    condiciones.append(f"{param_formal} == {v}")
-                case Variable(nombre=n) if n != param_formal:
-                    condiciones.append(f"{param_formal} == {n}")
+        for k, arg in enumerate(eq.izq.argumentos):
+            param_formal = self.nombres_params[k]
+            if (isinstance(arg, Variable) and not arg.indices
+                    and arg.nombre == param_formal):
+                continue  # el parámetro formal tal cual: no acota el dominio
+            condiciones.append(f"{param_formal} == {self.visit_Expresion(arg)}")
         return condiciones
 
     def visit_EcuacionRecursiva(self, eq):
@@ -584,9 +655,13 @@ class BottomUpGenerator(CodeGenerator):
         self.indent_level -= 1
         self.emitir("}")
         self.emitir("")
-        op_params = ", ".join(f"int {p}" for p in self.nombres_params)
-        acceso = "tabla" + "".join(f"[{p}]" for p in self.nombres_params)
-        self.emitir(f"int operator()({op_params}) {{ return {acceso}; }}")
+        if programa.retorno_agregado:
+            # operator() sin argumentos: agrega max/min sobre la tabla ya llena.
+            self.emitir(f"int operator()() {{ return {self.visit_Expresion(programa.retorno)}; }}")
+        else:
+            op_params = ", ".join(f"int {p}" for p in self.nombres_params)
+            acceso = "tabla" + "".join(f"[{p}]" for p in self.nombres_params)
+            self.emitir(f"int operator()({op_params}) {{ return {acceso}; }}")
         self.indent_level -= 1
         self.emitir("};")
 
@@ -680,29 +755,6 @@ class BottomUpGenerator(CodeGenerator):
 
     # --- Análisis de dependencias ----------------------------------------
 
-    def _tiene_reduccion_con_rango(self, programa: ProgramaDP) -> bool:
-        encontrado = False
-
-        def walk(n):
-            nonlocal encontrado
-            match n:
-                case Reduccion(rango=rg, argumentos=args):
-                    if rg is not None:
-                        encontrado = True
-                    for a in args:
-                        walk(a)
-                case OperacionBinaria(izq=i, der=d):
-                    walk(i); walk(d)
-                case Llamada(argumentos=args):
-                    for a in args:
-                        walk(a)
-                case _:
-                    pass
-
-        for eq in programa.ecuaciones:
-            walk(eq.der)
-        return encontrado
-
     def _llamadas_dp(self, nodo) -> List[Llamada]:
         """Todas las llamadas recursivas (a la propia función) dentro de un nodo."""
         res: List[Llamada] = []
@@ -771,17 +823,27 @@ class BottomUpGenerator(CodeGenerator):
 class SpaceOptGenerator(BottomUpGenerator):
     """Bottom-up con OPTIMIZACIÓN DE ESPACIO. Cubre dos casos:
 
-    - **2 parámetros, ventana 1**: la celda (i, ·) solo depende de la fila
-      actual y la anterior. Mantiene dos vectores fila (`prev`, `curr`) y los
-      intercambia: O(tamaño de una fila) en lugar de O(tabla completa).
+    - **n ≥ 2 parámetros, ventana 1 en el eje exterior**: la celda (i, ·…)
+      solo depende de la capa actual (i) y la anterior (i-1). Mantiene solo
+      esas dos capas (`prev`, `curr`) y las intercambia, dejando los demás ejes
+      completos: O(tamaño de una capa) en lugar de O(tabla completa). Para 2
+      parámetros son dos filas; para 3 o más, dos rebanadas (n-1)-dimensionales
+      —es la reducción del algoritmo de Floyd-Warshall: dos matrices V×V en vez
+      del cubo V×V×V—.
     - **1 parámetro, ventana acotada w**: la celda f(n) solo depende de
       f(n-1), …, f(n-w) con w constante. Mantiene una ventana deslizante de
       w+1 valores en un buffer circular indexado módulo (w+1): O(1) espacio
       (independiente de N). Es el caso de Fibonacci, factorial, Tribonacci.
 
+    Solo se reduce el eje EXTERIOR. Reducir además un eje interior NO es válido
+    en general aunque su salto sea acotado: dentro de una misma capa una celda
+    se sobrescribiría antes de que la siguiente la leyera (p. ej. en la LCS,
+    (i-1, j) lo pisa (i-1, j+2) antes de que la fila i lo consuma). Por eso los
+    ejes interiores se mantienen completos.
+
     Si la recurrencia no es reducible (DP de intervalos, ventana variable como
-    el corte de varilla, >2 parámetros…), deja un comentario y delega en el
-    bottom-up con tabla completa, que siempre es correcto.
+    el corte de varilla, salto >1 en el eje exterior…), deja un comentario y
+    delega en el bottom-up con tabla completa, que siempre es correcto.
     """
 
     def __init__(self, modo: str = "funcion"):
@@ -793,6 +855,14 @@ class SpaceOptGenerator(BottomUpGenerator):
 
     def generar(self, programa: ProgramaDP) -> str:
         self._preparar(programa)
+
+        # Un retorno agregado (max/min sobre las celdas) necesita TODA la tabla,
+        # incompatible con reducir el espacio: se delega en el bottom-up completo.
+        if programa.retorno_agregado:
+            nota = ("// [optimización de espacio] El retorno agregado max/min "
+                    "necesita la tabla completa;\n// se mantiene la tabla "
+                    "completa (bottom-up).\n")
+            return nota + BottomUpGenerator(self.modo).generar(programa)
 
         # Caso de 1 parámetro con ventana acotada: buffer circular O(1).
         w = self._ventana_1d(programa)
@@ -806,7 +876,7 @@ class SpaceOptGenerator(BottomUpGenerator):
             self._mod_1d = None
             return "\n".join(self.codigo)
 
-        # Caso de 2 parámetros con ventana 1: dos filas.
+        # Caso de n ≥ 2 parámetros con ventana 1 en el eje exterior: dos capas.
         if not self._es_reducible(programa):
             # Delegamos en un BottomUpGenerator nuevo: así su traducción de
             # llamadas (tabla[...]) no se mezcla con la de esta clase (prev/curr).
@@ -906,9 +976,11 @@ class SpaceOptGenerator(BottomUpGenerator):
     # --- Análisis de reducibilidad ---------------------------------------
 
     def _es_reducible(self, programa: ProgramaDP) -> bool:
-        """Reducible ⇔ exactamente 2 parámetros, sin DP de intervalos, y toda
-        lectura recursiva cae en la fila actual (Δ=0) o la anterior (Δ=1)."""
-        if len(self.nombres_params) != 2:
+        """Reducible ⇔ 2 o más parámetros, sin DP de intervalos, y toda lectura
+        recursiva cae en la capa actual del eje exterior (Δ=0) o la anterior
+        (Δ=1). Solo se examina el eje exterior: los interiores se mantienen
+        completos, así que no imponen condición."""
+        if len(self.nombres_params) < 2:
             return False
         if self._tiene_reduccion_con_rango(programa):
             return False
@@ -959,52 +1031,83 @@ class SpaceOptGenerator(BottomUpGenerator):
                 return f"tabla[({idx0}) % {self._mod_1d}]"
             delta = self._delta_fila(nodo.argumentos[0], self._fila_literal_actual)
             buffer = "curr" if delta == 0 else "prev"
-            if len(nodo.argumentos) == 1:
-                return buffer
-            idx1 = self.visit_Expresion(nodo.argumentos[1])
-            return f"{buffer}[{idx1}]"
+            # El eje exterior (argumento 0) lo resuelve prev/curr; los ejes
+            # interiores se indexan completos sobre la capa.
+            idx = "".join(f"[{self.visit_Expresion(a)}]" for a in nodo.argumentos[1:])
+            return f"{buffer}{idx}"
         return f"{nodo.nombre}({', '.join(self.visit_Expresion(a) for a in nodo.argumentos)})"
 
     # --- Esqueletos -------------------------------------------------------
 
     def _generar_funcion_so(self, programa: ProgramaDP) -> None:
-        self.emitir("// Algoritmo ascendente con optimización de espacio (dos filas).")
+        self.emitir("// Algoritmo ascendente con optimización de espacio "
+                    "(capa actual y anterior del eje exterior).")
         self.emitir(f"int {self.nombre_func}({self._params_publicos_str()}) {{")
         self.indent_level += 1
         self._emitir_cuerpo_so(programa)
         self.indent_level -= 1
         self.emitir("}")
 
-    def _emitir_cuerpo_so(self, programa: ProgramaDP, guardar: Optional[str] = None) -> None:
-        """Cuerpo del cálculo con dos filas. Si `guardar` se indica, almacena
-        el resultado final en ese atributo en vez de hacer `return`."""
-        tamanos = self._obtener_tamanos_memo(programa)
-        p0, p1 = self.nombres_params
-        size0, size1 = tamanos[0], tamanos[1]
+    def _init_capa(self, sizes: List[str]) -> str:
+        """Argumentos del constructor de una capa (`prev`/`curr`): un vector
+        (n-1)-dimensional dimensionado por los ejes interiores y relleno a 0.
+        Ej.: [W] → '(W + 1, 0)';  [W1, W2] → '(W1 + 1, vector<int>(W2 + 1, 0))'."""
+        n = len(sizes)
 
-        self.emitir(f"vector<int> prev({size1} + 1, 0), curr({size1} + 1, 0);")
+        def anidado(idx: int) -> str:
+            if idx == n - 1:
+                return f"{sizes[idx]} + 1, 0"
+            tipo_interno = self._obtener_tipo_vector(n - idx - 1)
+            return f"{sizes[idx]} + 1, {tipo_interno}({anidado(idx + 1)})"
+
+        return f"({anidado(0)})"
+
+    def _emitir_cuerpo_so(self, programa: ProgramaDP, guardar: Optional[str] = None) -> None:
+        """Cuerpo del cálculo manteniendo solo dos capas del eje exterior (la
+        actual y la anterior). Para 2 parámetros son dos filas; para 3 o más,
+        dos rebanadas (n-1)-dimensionales (p. ej. Floyd: dos matrices V×V en
+        lugar del cubo). Los ejes interiores se recorren completos, con su
+        sentido de iteración. Si `guardar` se indica, almacena el resultado
+        final en ese atributo en vez de hacer `return`."""
+        tamanos = self._obtener_tamanos_memo(programa)
+        p0 = self.nombres_params[0]
+        size0 = tamanos[0]
+        params_int = self.nombres_params[1:]     # ejes interiores (capa completa)
+        sizes_int = tamanos[1:]
+
+        tipo = self._obtener_tipo_vector(len(sizes_int))
+        init = self._init_capa(sizes_int)
+        self.emitir(f"{tipo} prev{init}, curr{init};")
         self.emitir(f"for (int {p0} = 0; {p0} <= {size0}; {p0}++) {{")
         self.indent_level += 1
-        self.emitir(f"for (int {p1} = 0; {p1} <= {size1}; {p1}++) {{")
-        self.indent_level += 1
+        for q, param in enumerate(params_int, start=1):
+            size = tamanos[q]
+            if self._direccion_axis(programa, q) == "dec":
+                self.emitir(f"for (int {param} = {size}; {param} >= 0; {param}--) {{")
+            else:
+                self.emitir(f"for (int {param} = 0; {param} <= {size}; {param}++) {{")
+            self.indent_level += 1
         self._emitir_cuerpo_celda(programa)   # reutiliza el cuerpo de BottomUp vía hooks
-        self.indent_level -= 1
-        self.emitir("}")
-        self.emitir("swap(prev, curr);")  # la fila recién calculada pasa a ser 'prev'
+        for _ in params_int:
+            self.indent_level -= 1
+            self.emitir("}")
+        self.emitir("swap(prev, curr);")  # la capa recién calculada pasa a ser 'prev'
         self.indent_level -= 1
         self.emitir("}")
 
-        idx1 = self.visit_Expresion(programa.retorno.argumentos[1])
+        idx = "".join(f"[{self.visit_Expresion(a)}]"
+                      for a in programa.retorno.argumentos[1:])
         if guardar is not None:
-            self.emitir(f"{guardar} = prev[{idx1}];")
+            self.emitir(f"{guardar} = prev{idx};")
         else:
-            self.emitir(f"return prev[{idx1}];")
+            self.emitir(f"return prev{idx};")
 
     # Hooks que adaptan el cuerpo común de BottomUpGenerator.
     def _acceso_celda(self) -> str:
         if self._mod_1d is not None:
             return f"tabla[({self.nombres_params[0]}) % {self._mod_1d}]"
-        return f"curr[{self.nombres_params[1]}]"
+        idx = "".join(f"[{p}]" for p in self.nombres_params[1:])
+        return f"curr{idx}"
 
     def _antes_de_ecuacion(self, eq: Ecuacion) -> None:
         # Necesario para que _traducir_llamada resuelva prev/curr según la fila.
@@ -1031,6 +1134,15 @@ class SinMemoGenerator(CodeGenerator):
 
     def generar(self, programa: ProgramaDP) -> str:
         self._preparar(programa)
+        # La función sin memoización ES la propia recursión (expone la celda),
+        # no tiene punto de entrada donde colocar el agregado max/min sobre las
+        # celdas. Para un retorno agregado, usa top-down o bottom-up.
+        if programa.retorno_agregado:
+            raise ValueError(
+                "[No soportado] El retorno agregado max/min{...} no está "
+                "disponible con --algoritmo sin-memo (la función es la "
+                "recursión directa, sin punto de entrada para agregar). Usa "
+                "top-down o bottom-up.")
         self._emitir_includes()
         if self.modo == "clase":
             self._generar_clase_sm(programa)
@@ -1108,12 +1220,46 @@ class ReconstruccionGenerator(BottomUpGenerator):
 
     Es incompatible con la optimización de espacio: el descenso necesita la
     tabla completa, no solo las dos últimas filas.
+
+    El recorrido de reconstrucción es independiente de cómo se haya rellenado la
+    tabla. Por eso vale tanto sobre el llenado ascendente (``descendente=False``,
+    por defecto) como sobre el descendente (``descendente=True``): en ese caso el
+    valor se calcula por memoización y el recorrido lee esa misma tabla de
+    memoización.
     """
+
+    def __init__(self, modo: str = "funcion", descendente: bool = False):
+        super().__init__(modo=modo)
+        self._descendente = descendente
+        # Nombre de la tabla que recorre la reconstrucción: la de memoización
+        # (descendente) o la tabla ascendente.
+        self._tabla_recon = "memo" if descendente else "tabla"
+        # Con memoización, el recorrido necesita leer también las celdas base, así
+        # que el valor descendente las guarda en la memo (no solo las recursivas).
+        self._memoizar_base = descendente
+        # Cómo se traduce una llamada DP en `_render_llamada`: durante el
+        # recorrido es una LECTURA de la tabla; al generar la función de valor
+        # descendente es la llamada recursiva memoizada.
+        self._como_tabla = True
+
+    def _render_llamada(self, nombre: str, args_str: List[str]) -> str:
+        if self._como_tabla:
+            if nombre == self.nombre_func:
+                return self._tabla_recon + "".join(f"[{a}]" for a in args_str)
+            return f"{nombre}({', '.join(args_str)})"
+        return CodeGenerator._render_llamada(self, nombre, args_str)
 
     # --- Punto de entrada -------------------------------------------------
 
     def generar(self, programa: ProgramaDP) -> str:
         self._preparar(programa)
+        if programa.retorno_agregado:
+            # La reconstrucción parte de una celda concreta (la llamada inicial)
+            # y desciende; con un retorno agregado max/min no hay una única
+            # celda de partida (habría que reconstruir desde el argmax/argmin).
+            raise ValueError(
+                "[No soportado] --reconstruir aún no admite un retorno agregado "
+                "max/min{...}; usa un retorno en una celda concreta f(...).")
         self._comprobar_elegible(programa)
         self._emitir_includes()
         if self.modo == "clase":
@@ -1123,11 +1269,12 @@ class ReconstruccionGenerator(BottomUpGenerator):
         return "\n".join(self.codigo)
 
     def _emitir_includes(self) -> None:
-        # La reconstrucción usa una lambda recursiva (std::function).
         self.emitir("#include <vector>")
         self.emitir("#include <algorithm>")
         self.emitir("#include <climits>")
-        self.emitir("#include <functional>")
+        if self._es_arbol:
+            # El descenso de intervalos usa una lambda recursiva (std::function).
+            self.emitir("#include <functional>")
         self.emitir("using namespace std;")
         self.emitir("")
 
@@ -1249,23 +1396,39 @@ class ReconstruccionGenerator(BottomUpGenerator):
     # --- Esqueletos: valor + reconstrucción -------------------------------
 
     def _generar_funcion_recon(self, programa: ProgramaDP) -> None:
-        # 1) Función de valor (bottom-up con tabla completa).
-        self._generar_funcion_bu(programa)
+        # 1) Función de valor: descendente (memoizada) o ascendente (tabla completa).
+        if self._descendente:
+            self._como_tabla = False
+            self._generar_funciones(programa)
+            self._como_tabla = True
+        else:
+            self._generar_funcion_bu(programa)
         self.emitir("")
-        # 2) Función de reconstrucción.
+        # 2) Función de reconstrucción: rellena la tabla relevante y la recorre.
         self._emitir_comentario_recon()
         self.emitir(f"vector<vector<int>> {self.nombre_func}_reconstruir"
                     f"({self._params_publicos_str()}) {{")
         self.indent_level += 1
         tipo = self._obtener_tipo_vector(len(self.nombres_params))
-        self.emitir(f"{tipo} tabla;")
-        self._generar_assign_tabla(programa, nombre="tabla", relleno="0")
-        self._generar_llenado(programa)
+        self.emitir(f"{tipo} {self._tabla_recon};")
+        if self._descendente:
+            # Rellena la memo lanzando la recursión memoizada (deja calculadas las
+            # celdas del camino óptimo y de sus subproblemas) y recorre esa memo.
+            self._generar_assign_tabla(programa, nombre=self._tabla_recon, relleno="-1")
+            datos = [d.nombre for d in self.datos_ref]
+            init_args = [self.visit_Expresion(a) for a in programa.retorno.argumentos]
+            self.emitir(f"{self.nombre_func}({', '.join(datos + init_args + [self._tabla_recon])});")
+        else:
+            self._generar_assign_tabla(programa, nombre="tabla", relleno="0")
+            self._generar_llenado(programa)
         self._emitir_reconstruccion(programa)
         self.indent_level -= 1
         self.emitir("}")
 
     def _generar_clase_recon(self, programa: ProgramaDP) -> None:
+        if self._descendente:
+            self._generar_clase_recon_td(programa)
+            return
         self.emitir(f"class {self.nombre_func} {{")
         self.indent_level += 1
         for d in programa.declaraciones:
@@ -1303,6 +1466,50 @@ class ReconstruccionGenerator(BottomUpGenerator):
         self.indent_level -= 1
         self.emitir("};")
 
+    def _generar_clase_recon_td(self, programa: ProgramaDP) -> None:
+        """Clase con valor descendente (memoizado) y método `reconstruir` que
+        lanza la recursión para rellenar la memo y luego la recorre."""
+        self.emitir(f"class {self.nombre_func} {{")
+        self.indent_level += 1
+        for d in programa.declaraciones:
+            self.emitir(f"{d.tipo.to_cpp()} {d.nombre};")
+        tipo = self._obtener_tipo_vector(len(self.nombres_params))
+        self.emitir(f"{tipo} memo;")
+        self.emitir("")
+        # Método privado recursivo memoizado.
+        self._como_tabla = False
+        params = ", ".join(f"int {p}" for p in self.nombres_params)
+        self.emitir(f"int resolver({params}) {{")
+        self.indent_level += 1
+        self._generar_cuerpo_resolucion(programa)
+        self.indent_level -= 1
+        self.emitir("}")
+        self._como_tabla = True
+        self.indent_level -= 1
+        self.emitir("")
+        self.emitir("public:")
+        self.indent_level += 1
+        ctor_params, init_list = self._firma_constructor(programa)
+        self.emitir(f"{self.nombre_func}({ctor_params}){init_list} {{")
+        self.indent_level += 1
+        self._generar_assign_tabla(programa, nombre="memo", relleno="-1")
+        self.indent_level -= 1
+        self.emitir("}")
+        self.emitir("")
+        op_params = ", ".join(f"int {p}" for p in self.nombres_params)
+        self.emitir(f"int operator()({op_params}) {{ return resolver({', '.join(self.nombres_params)}); }}")
+        self.emitir("")
+        self._emitir_comentario_recon()
+        self.emitir("vector<vector<int>> reconstruir() {")
+        self.indent_level += 1
+        init_args = [self.visit_Expresion(a) for a in programa.retorno.argumentos]
+        self.emitir(f"resolver({', '.join(init_args)});")
+        self._emitir_reconstruccion(programa)
+        self.indent_level -= 1
+        self.emitir("}")
+        self.indent_level -= 1
+        self.emitir("};")
+
     # --- Descenso que sigue la decisión óptima ----------------------------
 
     def _emitir_comentario_recon(self) -> None:
@@ -1312,48 +1519,124 @@ class ReconstruccionGenerator(BottomUpGenerator):
             self.emitir("// en preorden del árbol de decisiones.")
         else:
             self.emitir("// Reconstrucción: secuencia de estados (celdas) del camino óptimo,")
-            self.emitir("// desde la llamada inicial hasta el caso base.")
+            self.emitir("// recorrida iterativamente desde la llamada inicial hasta el caso base.")
 
     def _emitir_reconstruccion(self, programa: ProgramaDP) -> None:
-        """Emite el vector de salida, la lambda recursiva que sigue la decisión
-        óptima (recomputada sobre la tabla) y la llamada inicial. Para un DP de
-        camino la recursión es lineal (una secuencia de celdas); para un DP de
-        intervalos se ramifica en dos (una parentización)."""
-        salida = "cortes" if self._es_arbol else "camino"
-        self.emitir(f"vector<vector<int>> {salida};")
-        firma = "void(" + ", ".join("int" for _ in self.nombres_params) + ")"
-        params = ", ".join(f"int {p}" for p in self.nombres_params)
-        self.emitir(f"function<{firma}> rec = [&]({params}) {{")
-        self.indent_level += 1
+        """Emite la salida y el descenso que sigue la decisión óptima
+        (recomputada sobre la tabla). En un DP de CAMINO cada celda referencia un
+        único subproblema, de modo que la recursión sería final y el descenso se
+        hace ITERATIVO (un bucle); en un DP de INTERVALOS se ramifica en dos
+        subproblemas y se mantiene recursivo."""
         if self._es_arbol:
-            self._emitir_cuerpo_lambda_arbol(programa)
+            self._emitir_reconstruccion_arbol(programa)
         else:
-            self._emitir_cuerpo_lambda_camino(programa)
-        self.indent_level -= 1
-        self.emitir("};")
-        inits = ", ".join(self.visit_Expresion(a) for a in programa.retorno.argumentos)
-        self.emitir(f"rec({inits});")
-        self.emitir(f"return {salida};")
+            self._emitir_reconstruccion_camino(programa)
 
-    def _emitir_cuerpo_lambda_camino(self, programa: ProgramaDP) -> None:
-        """Cuerpo de la lambda para un DP de camino: registra la celda actual,
-        para en el caso base y, en otro caso, sigue al único subproblema que
-        realiza el óptimo."""
-        acceso = "tabla" + "".join(f"[{p}]" for p in self.nombres_params)
+    def _emitir_reconstruccion_camino(self, programa: ProgramaDP) -> None:
+        """Descenso ITERATIVO para un DP de camino. Los parámetros son variables
+        mutables: en cada vuelta se registra la celda actual y se avanza al único
+        subproblema que realiza el óptimo (la recursión final se convierte en un
+        bucle, más barato que la recursión). Para no usar un índice ya
+        actualizado al calcular los siguientes, el próximo estado se computa en
+        variables `sig_*` y el avance se aplica al final de la vuelta."""
+        self.emitir("vector<vector<int>> camino;")
+        inits = [self.visit_Expresion(a) for a in programa.retorno.argumentos]
+        decl = ", ".join(f"{p} = {v}" for p, v in zip(self.nombres_params, inits))
+        self.emitir(f"int {decl};")
+        acceso = self._tabla_recon + "".join(f"[{p}]" for p in self.nombres_params)
+        sig = [f"sig_{p}" for p in self.nombres_params]
+        self.emitir("while (true) {")
+        self.indent_level += 1
         celda = "{" + ", ".join(self.nombres_params) + "}"
         self.emitir(f"camino.push_back({celda});")
         disy = self._disyuncion_base(programa)
         if disy:
-            self.emitir(f"if ({disy}) return;")
+            self.emitir(f"if ({disy}) break;")
+        self.emitir("int " + ", ".join(f"{s} = {p}" for s, p in zip(sig, self.nombres_params)) + ";")
+        self.emitir("bool avanza = false;")
         for eq in programa.ecuaciones:
             if not eq.es_caso_base:
-                self._emitir_rama_lambda(eq, acceso, arbol=False)
+                self._emitir_rama_camino_iter(eq, acceso, sig)
+        self.emitir("if (!avanza) break;  // ninguna decisión encaja: fin del camino")
+        self.emitir(" ".join(f"{p} = {s};" for p, s in zip(self.nombres_params, sig)))
+        self.indent_level -= 1
+        self.emitir("}")
+        self.emitir("return camino;")
+
+    def _emitir_rama_camino_iter(self, eq: Ecuacion, acceso: str, sig: List[str]) -> None:
+        """Para una ecuación recursiva del camino: si su guarda se cumple y aún no
+        se ha avanzado, busca la alternativa cuyo valor recomputado iguala
+        `tabla[celda]` y fija con ella el próximo estado (`sig_*`)."""
+        conds = self._condiciones_implicitas(eq)
+        if eq.condicion is not None:
+            conds.append(self.visit_Expresion(eq.condicion))
+        guarda = " && ".join(conds) if conds else None
+        entrada = "!avanza" + (f" && {guarda}" if guarda else "")
+        self.emitir(f"if ({entrada}) {{")
+        self.indent_level += 1
+        red = self._encontrar_reduccion(eq.der)
+        if red is not None and red.rango is not None:
+            alt = self._sustituir_nodo(eq.der, red, red.argumentos[0])
+            it = red.rango.iterador.nombre
+            lo = self.visit_Expresion(red.rango.limite_inf)
+            hi = self.visit_Expresion(red.rango.limite_sup)
+            ini = lo if red.rango.incluye_inf else f"{lo} + 1"
+            cmp = "<=" if red.rango.incluye_sup else "<"
+            self.emitir(f"for (int {it} = {ini}; {it} {cmp} {hi}; {it}++) {{")
+            self.indent_level += 1
+            cond_match = f"{acceso} == {self.visit_Expresion(alt)}"
+            if red.filtro is not None:
+                cond_match = f"({self.visit_Expresion(red.filtro)}) && ({cond_match})"
+            self.emitir(f"if ({cond_match}) {{")
+            self.indent_level += 1
+            self._emitir_paso_camino_iter(alt, sig)
+            self.emitir("avanza = true; break;")
+            self.indent_level -= 1
+            self.emitir("}")
+            self.indent_level -= 1
+            self.emitir("}")
+        else:
+            primero = True
+            for alt in self._alternativas(eq):
+                kw = "if" if primero else "else if"
+                self.emitir(f"{kw} ({acceso} == {self.visit_Expresion(alt)}) {{")
+                self.indent_level += 1
+                self._emitir_paso_camino_iter(alt, sig)
+                self.emitir("avanza = true;")
+                self.indent_level -= 1
+                self.emitir("}")
+                primero = False
+        self.indent_level -= 1
+        self.emitir("}")
+
+    def _emitir_paso_camino_iter(self, alt: Expresion, sig: List[str]) -> None:
+        """Fija el próximo estado (`sig_*`) a los argumentos del único subproblema
+        de la alternativa, computados sobre los parámetros actuales."""
+        call = self._llamadas_dp(alt)[0]
+        for s, a in zip(sig, call.argumentos):
+            self.emitir(f"{s} = {self.visit_Expresion(a)};")
+
+    def _emitir_reconstruccion_arbol(self, programa: ProgramaDP) -> None:
+        """Descenso RECURSIVO para un DP de intervalos: en cada celda registra el
+        corte que realiza el óptimo y se ramifica en los dos subintervalos. No es
+        recursión final (dos subproblemas), así que se mantiene recursivo."""
+        self.emitir("vector<vector<int>> cortes;")
+        firma = "void(" + ", ".join("int" for _ in self.nombres_params) + ")"
+        params = ", ".join(f"int {p}" for p in self.nombres_params)
+        self.emitir(f"function<{firma}> rec = [&]({params}) {{")
+        self.indent_level += 1
+        self._emitir_cuerpo_lambda_arbol(programa)
+        self.indent_level -= 1
+        self.emitir("};")
+        inits = ", ".join(self.visit_Expresion(a) for a in programa.retorno.argumentos)
+        self.emitir(f"rec({inits});")
+        self.emitir("return cortes;")
 
     def _emitir_cuerpo_lambda_arbol(self, programa: ProgramaDP) -> None:
         """Cuerpo de la lambda para un DP de intervalos: para en el caso base
         (un intervalo unitario, sin corte) y, en otro caso, registra el corte k
         que realiza el óptimo y desciende en los dos subintervalos."""
-        acceso = "tabla" + "".join(f"[{p}]" for p in self.nombres_params)
+        acceso = self._tabla_recon + "".join(f"[{p}]" for p in self.nombres_params)
         disy = self._disyuncion_base(programa)
         if disy:
             self.emitir(f"if ({disy}) return;")

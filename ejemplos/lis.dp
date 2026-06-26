@@ -2,8 +2,9 @@
 // La reducción agrega solo los predecesores k con a[k] < a[i]; si no hay ninguno
 // (a[i] es menor que todos los anteriores), el máximo del conjunto vacío es 0,
 // así que LIS(i) = 1 (la subsecuencia formada solo por a[i]).
-// La LIS global sería el máximo de LIS(i) sobre todo i; aquí se devuelve la que
-// termina en N, porque el retorno del DSL es un único valor.
+// La LIS global es el máximo de LIS(i) sobre todo i; aquí se devuelve la que
+// termina en N. La versión global, con un retorno agregado max{...}(LIS(k)),
+// está en `lis_global.dp`.
 nat N;
 array<nat> a;
 

@@ -1,0 +1,16 @@
+// Mochila 0/1 con DOS restricciones (peso y volumen).
+// Generaliza la mochila: el objeto i pesa w1[i] y ocupa w2[i]; hay que no
+// superar la capacidad de peso W1 ni la de volumen W2. Es un DP de TRES
+// parámetros (i, a, b) cuyo eje exterior i salta de 1 en 1, así que la
+// optimización de espacio mantiene solo dos capas (a x b) en vez del cubo.
+nat N;
+nat W1, W2;
+array<nat> v;
+array<nat> w1, w2;
+
+mochila2(0, a, b) = 0;
+mochila2(i, a, b) = mochila2(i - 1, a, b) if w1[i] > a or w2[i] > b;
+mochila2(i, a, b) = max{ mochila2(i - 1, a, b),
+                         v[i] + mochila2(i - 1, a - w1[i], b - w2[i]) } if w1[i] <= a and w2[i] <= b;
+
+return mochila2(N, W1, W2);

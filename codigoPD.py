@@ -56,9 +56,11 @@ def validar_entrada(codigo: str, modo: str = "funcion", algoritmo: str = "top-do
 
     try:
         if reconstruir:
-            # La reconstrucción necesita la tabla completa: usa su propio
-            # generador (bottom-up + trace-back), ignorando --space-opt.
-            generador = ReconstruccionGenerator(modo=modo)
+            # La reconstrucción necesita la tabla completa (ignora --space-opt).
+            # El recorrido es independiente del llenado, así que sigue la
+            # estrategia pedida: descendente (memoización) o ascendente.
+            generador = ReconstruccionGenerator(
+                modo=modo, descendente=(algoritmo == "top-down"))
         elif algoritmo == "sin-memo":
             generador = SinMemoGenerator(modo=modo)
         elif algoritmo == "bottom-up" and space_opt:
@@ -92,8 +94,11 @@ def construir_cli() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--space-opt", action="store_true",
-        help="Optimización de espacio: reduce la tabla a dos filas cuando la "
-             "recurrencia lo permite (requiere --algoritmo bottom-up)."
+        help="Optimización de espacio: cuando la recurrencia lo permite, "
+             "mantiene solo las dos capas necesarias del eje exterior (dos "
+             "filas con 2 parámetros, dos rebanadas con 3 o más, como en "
+             "Floyd-Warshall) o una ventana deslizante O(1) con 1 parámetro "
+             "(requiere --algoritmo bottom-up)."
     )
     p.add_argument(
         "--gen", choices=["funcion", "clase"], default="funcion",
@@ -105,9 +110,10 @@ def construir_cli() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--smt", action="store_true",
-        help="Descargar las verificaciones (terminación e índices) con Z3 en "
-             "lugar del solver propio. La comprobación de índices se hace SIEMPRE; "
-             "esta bandera solo cambia el motor (requiere 'pip install z3-solver')."
+        help="Fuerza la vía Z3 para toda la verificación (terminación e índices). "
+             "No suele hacer falta: los índices no afines y las precondiciones no "
+             "lineales (p. ej. el cambio de monedas) ya se descargan en Z3 "
+             "automáticamente (requiere 'pip install z3-solver')."
     )
     p.add_argument(
         "--reconstruir", action="store_true",

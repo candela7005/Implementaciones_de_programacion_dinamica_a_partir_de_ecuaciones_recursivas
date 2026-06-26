@@ -242,7 +242,7 @@ class TerminacionRecolectora:
 
     def __init__(self, programa: ProgramaDP):
         self.programa = programa
-        self.nombre_func = programa.retorno.nombre
+        self.nombre_func = programa.llamada_inicial.nombre
         self.parametros = self._inferir_parametros()
 
     def _inferir_parametros(self) -> List[str]:
@@ -643,6 +643,17 @@ def _candidatos_cota(parametros: List[str]) -> List[LinearExpr]:
     return candidatos
 
 
+def _precondiciones_no_lineales(programa: ProgramaDP) -> bool:
+    """True si alguna precondición es del tipo que el solver de cota afín no
+    puede aprovechar y sí Z3: cuantificada (`forall k: …`) o sin contenido
+    lineal extraíble (p. ej. con accesos a array, como `moneda[k] >= 1`). En
+    ese caso la prueba de terminación se descarga en Z3 sin necesidad de `--smt`."""
+    return any(
+        pc.cuantificador is not None or not restricciones_de_condicion(pc.expr)
+        for pc in programa.precondiciones
+    )
+
+
 def analizar_terminacion(programa: ProgramaDP, verificadora=None) -> Tuple[LinearExpr, List[Obligacion]]:
     """Punto de entrada. Prueba candidatos de cota; el primero que cumple
     todas las obligaciones se devuelve junto con sus obligaciones.
@@ -664,10 +675,15 @@ def analizar_terminacion(programa: ProgramaDP, verificadora=None) -> Tuple[Linea
     if not hay_recursividad:
         return LinearExpr.constante(0), []
 
-    # Si hay precondiciones y se pidió el SMT, se usa la vía con Z3 (teoría de
-    # arrays + cuantificadores), capaz de aprovechar precondiciones como
-    # `forall k: moneda[k] >= 1` que el solver lineal propio no puede usar.
-    if programa.precondiciones and isinstance(verificadora, VerificadoraSMT) and Z3_DISPONIBLE:
+    # Si hay precondiciones, se usa la vía con Z3 (teoría de arrays +
+    # cuantificadores), capaz de aprovechar precondiciones como
+    # `forall k: moneda[k] >= 1` que el solver de cota afín no puede usar. Se
+    # toma esta vía AUTOMÁTICAMENTE cuando la precondición es NO LINEAL
+    # (cuantificada o con accesos a array) —el solver propio no podría
+    # gestionarla—, o siempre que se pida `--smt` de forma explícita.
+    if (programa.precondiciones and Z3_DISPONIBLE
+            and (isinstance(verificadora, VerificadoraSMT)
+                 or _precondiciones_no_lineales(programa))):
         return _terminacion_con_precondiciones_z3(programa, recolectora)
 
     fallos_por_candidato: List[Tuple[LinearExpr, List[Obligacion]]] = []
@@ -1006,7 +1022,7 @@ class VerificadorIndices:
         (p. ej. secMatrices(1, N) sugiere i ≥ 1) y baja a 0 cualquier cota cuya
         preservación no pueda demostrarse. Es siempre SOUND: en el peor caso
         queda Lₖ = 0 (la cota de los naturales)."""
-        ret_args = self.programa.retorno.argumentos
+        ret_args = self.programa.llamada_inicial.argumentos
         L: Dict[str, int] = {}
         for k, p in enumerate(self.parametros):
             arg = ret_args[k] if k < len(ret_args) else None
@@ -1124,7 +1140,7 @@ class VerificadorIndices:
             if pc.cuantificador is None:
                 hyps += restricciones_de_condicion(pc.expr, {})
 
-        for k, arg in enumerate(self.programa.retorno.argumentos):
+        for k, arg in enumerate(self.programa.llamada_inicial.argumentos):
             e = expr_a_lineal(arg, {})
             if e is None:
                 # Argumento inicial no afín (raro). Se refuta con Z3 si está

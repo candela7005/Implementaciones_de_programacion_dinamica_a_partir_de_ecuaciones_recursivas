@@ -115,25 +115,96 @@ class Precondicion:
     expr: Expresion
     cuantificador: Optional[str] = None
 
+def _buscar_llamada(nodo) -> Optional[Llamada]:
+    """Primera llamada que aparece en una expresión (búsqueda en profundidad)."""
+    match nodo:
+        case Llamada():
+            return nodo
+        case OperacionBinaria(izq=izq, der=der):
+            return _buscar_llamada(izq) or _buscar_llamada(der)
+        case Reduccion(argumentos=args):
+            for a in args:
+                r = _buscar_llamada(a)
+                if r is not None:
+                    return r
+            return None
+        case _:
+            return None
+
+
+def _sustituir_variable(nodo, nombre: str, reemplazo):
+    """Copia de `nodo` con cada Variable `nombre` (sin índices) sustituida por
+    `reemplazo`. Sirve para representar la celda extrema de un retorno agregado
+    (el iterador de la reducción pasa a ser el límite superior del rango)."""
+    match nodo:
+        case Variable(nombre=n, indices=idxs) if n == nombre and not idxs:
+            return reemplazo
+        case Variable(nombre=n, indices=idxs):
+            return Variable(n, [_sustituir_variable(i, nombre, reemplazo) for i in idxs])
+        case OperacionBinaria(izq=l, operador=op, der=r):
+            return OperacionBinaria(_sustituir_variable(l, nombre, reemplazo), op,
+                                    _sustituir_variable(r, nombre, reemplazo))
+        case Llamada(nombre=fn, argumentos=args):
+            return Llamada(fn, [_sustituir_variable(a, nombre, reemplazo) for a in args])
+        case _:
+            return nodo
+
+
+def llamada_representativa(retorno) -> Llamada:
+    """La llamada a la función DP que representa el retorno, para nombrar la
+    función, dimensionar la tabla y comprobar la llamada inicial.
+
+    - Si el retorno es una llamada `f(args)`, ella misma.
+    - Si es un retorno AGREGADO `max/min{a <= k <= b}( … f(…) … )` (la LIS
+      global, por ejemplo), la llamada interna con el iterador `k` sustituido
+      por el límite superior `b`: la celda extrema, que fija el nombre, las
+      dimensiones de la tabla y la cota de la llamada inicial."""
+    if isinstance(retorno, Llamada):
+        return retorno
+    if isinstance(retorno, Reduccion):
+        interna = None
+        for a in retorno.argumentos:
+            interna = _buscar_llamada(a)
+            if interna is not None:
+                break
+        if interna is None:
+            raise ValueError("[Semántico] El retorno agregado no llama a la función.")
+        if retorno.rango is not None:
+            interna = _sustituir_variable(
+                interna, retorno.rango.iterador.nombre, retorno.rango.limite_sup)
+        return interna
+    raise ValueError("[Semántico] El retorno debe ser una llamada f(...) o una "
+                     "reducción max/min de una llamada.")
+
+
 @dataclass
 class ProgramaDP:
     declaraciones: List[Declaracion] = field(default_factory=list)
     ecuaciones: List[Ecuacion] = field(default_factory=list)
-    retorno: Llamada = None
+    retorno: Expresion = None          # Llamada f(...) o Reduccion (retorno agregado)
     precondiciones: List[Precondicion] = field(default_factory=list)
 
+    @property
+    def llamada_inicial(self) -> Llamada:
+        """Llamada DP representativa del retorno (ver `llamada_representativa`)."""
+        return llamada_representativa(self.retorno)
 
+    @property
+    def retorno_agregado(self) -> bool:
+        """True si el retorno es una reducción max/min sobre las celdas."""
+        return isinstance(self.retorno, Reduccion)
 
 
 def inferir_tamanos_tabla(programa: ProgramaDP) -> List[str]:
     """Tamaño (símbolo o literal) de cada dimensión de la tabla, inferido de
-    los argumentos de la llamada de retorno y de las dimensiones globales."""
+    los argumentos de la llamada de retorno (representativa) y de las
+    dimensiones globales."""
     tamanos: List[str] = []
     limites_globales = [
         decl.nombre for decl in programa.declaraciones
         if isinstance(decl.tipo, BasicType) and decl.tipo.clase in (BasicKind.NAT, BasicKind.INT)
     ]
-    for i, arg in enumerate(programa.retorno.argumentos):
+    for i, arg in enumerate(programa.llamada_inicial.argumentos):
         if isinstance(arg, Variable):
             tamanos.append(arg.nombre)
         elif i < len(limites_globales): # asumimos que el orden de los argumentos coincide con el de las declaraciones globales

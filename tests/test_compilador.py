@@ -51,6 +51,19 @@ class TestCasosNegativos(unittest.TestCase):
                 self.assertFalse(ok, f"{nombre} debería ser rechazado")
                 self.assertIn("Terminación", salida)
 
+    def test_rechaza_indice_cero_en_intervalos(self):
+        # ebanisto(0, N): un DP de intervalos que arranca en la posición 0.
+        # El llenado por longitud es base-1 (empieza en i = 1), así que la
+        # celda (0, N) nunca se rellena: debe AVISAR en vez de emitir código
+        # incorrecto, en todas las estrategias.
+        for algoritmo in ("sin-memo", "top-down", "bottom-up"):
+            with self.subTest(algoritmo=algoritmo):
+                ok, salida = validar_entrada(
+                    _leer("fail", "ebanisto1.dp"), algoritmo=algoritmo)
+                self.assertFalse(ok, "ebanisto1 debería rechazarse")
+                self.assertIn("posición 0", salida)
+                self.assertIn("base 1", salida)
+
     def test_variable_no_declarada(self):
         fuente = "nat N; f(0) = 0; f(n) = f(n-1) + xx; return f(N);"
         ok, salida = validar_entrada(fuente)

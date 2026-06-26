@@ -76,6 +76,20 @@ EJEMPLOS = {
         "reducible": True,
         "expected": 9,
     },
+    "mochila2": {
+        # Mochila con dos restricciones: TRES parámetros. Ejercita la
+        # optimización de espacio sobre el eje exterior (dos capas a x b).
+        "func": "mochila2",
+        "decls": "vector<int> v = {0,3,4,5};\n"
+                 "    vector<int> w1 = {0,2,3,4};\n"
+                 "    vector<int> w2 = {0,1,2,3};",
+        "data": ["v", "w1", "w2"],
+        "scalars": ["3", "5", "4"],
+        "initial": ["3", "5", "4"],
+        "ctor": ["3", "5", "4", "v", "w1", "w2"],
+        "reducible": True,    # 3 parámetros: se reduce el eje exterior, ejes internos completos
+        "expected": 7,        # {1,2}: peso 5<=5, volumen 3<=4, valor 3+4=7
+    },
     "camino": {
         "func": "camino",
         "decls": "vector<vector<int>> coste = {{0,0,0,0},{0,1,3,1},{0,1,5,1},{0,4,2,1}};",
@@ -96,6 +110,18 @@ EJEMPLOS = {
         "ctor": ["3", "d"],
         "reducible": False,   # DP de intervalos: no reducible a dos filas
         "expected": 18000,
+    },
+    "tablon": {
+        # Corte de tablón (Ebanisto) 1-indexado: DP de intervalos cuyo caso
+        # base ebanisto(i, i+1) usa un argumento compuesto -> guarda j==(i+1).
+        "func": "ebanisto",
+        "decls": "vector<int> marcas = {0,0,2,5,9};",
+        "data": ["marcas"],
+        "scalars": ["4"],
+        "initial": ["1", "4"],
+        "ctor": ["4", "marcas"],
+        "reducible": False,   # DP de intervalos: no reducible a dos filas
+        "expected": 14,
     },
     "binom": {
         "func": "binom",

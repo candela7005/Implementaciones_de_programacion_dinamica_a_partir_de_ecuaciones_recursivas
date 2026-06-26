@@ -73,6 +73,15 @@ class TestReconstruccionGeneracion(unittest.TestCase):
         self.assertTrue(ok, salida)
         self.assertIn("reconstruir()", salida)
 
+    def test_descendente_memoiza_y_ascendente_no(self):
+        # El recorrido es independiente del llenado: con top-down el valor se
+        # memoiza y el recorrido lee esa memo; con bottom-up se llena la tabla.
+        td = validar_entrada(_leer("mochila.dp"), reconstruir=True, algoritmo="top-down")[1]
+        self.assertIn("if (memo[i][c] != -1)", td)   # valor memoizado
+        self.assertIn("memo[i][c] ==", td)            # el recorrido lee la memo
+        bu = validar_entrada(_leer("mochila.dp"), reconstruir=True, algoritmo="bottom-up")[1]
+        self.assertNotIn("memo", bu)                  # el ascendente usa 'tabla'
+
     @unittest.skipUnless(codigoPD.Z3_DISPONIBLE, "z3 no está instalado")
     def test_monedas_con_smt(self):
         ok, salida = validar_entrada(_leer("monedas.dp"), reconstruir=True, usar_smt=True)
@@ -109,6 +118,23 @@ class TestReconstruccionEndToEnd(unittest.TestCase):
             "  std::cout << r << std::endl; return 0; }\n"
         )
         self.assertEqual(self._ejecutar("mochila", driver, modo="clase"), "9")
+
+    def test_reconstruccion_ambos_enfoques(self):
+        # La misma reconstrucción de la mochila reproduce el óptimo (9) tanto
+        # sobre el llenado ascendente (bottom-up) como sobre el descendente
+        # (top-down, memoización), confirmando que es independiente del llenado.
+        driver = (
+            "\n#include <iostream>\n"
+            "int main(){ vector<int> v={0,1,4,5,7}, w={0,1,3,4,5};\n"
+            "  auto p = mochila_reconstruir(v, w, 4, 7); int r = 0;\n"
+            "  for (size_t k=0;k+1<p.size();k++) if (p[k+1][1]<p[k][1]) r += v[p[k][0]];\n"
+            "  std::cout << r << std::endl; return 0; }\n"
+        )
+        for alg in ("bottom-up", "top-down"):
+            with self.subTest(algoritmo=alg):
+                ok, cpp = validar_entrada(_leer("mochila.dp"), reconstruir=True, algoritmo=alg)
+                self.assertTrue(ok, cpp)
+                self.assertEqual(casos.compilar_y_ejecutar(cpp + driver).strip(), "9")
 
     def test_rod(self):
         # Suma de price[corte] (corte = caída de n) = beneficio óptimo.

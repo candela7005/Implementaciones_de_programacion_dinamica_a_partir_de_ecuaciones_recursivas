@@ -191,7 +191,11 @@ class SemanticChecks:
             if cond is not None:
                 self.validar_y_anotar(cond)
 
-    def inicial(self, retorno: Llamada) -> None:
-        self.comprobacionFunc(retorno.nombre, "retorno inicial")
+    def inicial(self, retorno) -> None:
+        # El retorno puede ser una llamada f(...) o una reducción agregada
+        # max/min{...}(f(...)); en ambos casos la llamada representativa fija
+        # el nombre de la función y `validar_y_anotar` comprueba toda la
+        # expresión (registrando el iterador de la reducción si lo hay).
+        self.comprobacionFunc(llamada_representativa(retorno).nombre, "retorno inicial")
         self.locales.clear()
         self.validar_y_anotar(retorno)

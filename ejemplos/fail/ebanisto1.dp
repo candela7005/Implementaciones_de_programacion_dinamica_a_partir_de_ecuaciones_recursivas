@@ -1,0 +1,16 @@
+// El carpintero Ebanisto: coste de cortar un tablón entre las marcas i y j.
+// RECHAZADO: la llamada inicial ebanisto(0, N) arranca en la posición 0, pero
+// los DP de intervalos se indexan en base 1 (el llenado por longitud empieza
+// en i = 1 y la posición 0 queda reservada como centinela). La celda (0, N)
+// nunca se rellenaría. La versión 1-indexada sí está soportada: ver el caso
+// base con argumento compuesto ebanisto(i, i + 1), que ahora genera la guarda
+// 'j == (i + 1)' correctamente (ejemplos/tablon.dp).
+nat N;
+array<nat, N> marcas;
+requires forall k: (k >= N - 1) or (marcas[k] < marcas[k + 1]);
+requires N >= 1;
+
+ebanisto(i, i + 1) = 0;
+ebanisto(i, j) = marcas[j] - marcas[i] + min { i < k < j } ( ebanisto(i, k) + ebanisto(k, j) );
+
+return ebanisto(0, N);

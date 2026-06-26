@@ -23,7 +23,8 @@ Desarrollado como Trabajo de Fin de Grado en Matemáticas (UCM).
 - Python 3.10 o superior
 - [`lark`](https://github.com/lark-parser/lark) (analizador sintáctico): `pip install lark`
 - [`z3-solver`](https://pypi.org/project/z3-solver/) (`pip install z3-solver`): necesario para
-  las recurrencias con índices que dependen de los datos (como la mochila) y para la opción
+  las recurrencias con índices que dependen de los datos (como la mochila), para las que tienen
+  precondiciones no lineales (como `forall k: d[k] >= 1` del cambio de monedas) y para la opción
   `--smt`. Sin él, esos problemas se rechazan con un mensaje en lugar de aceptarse sin verificar.
 - Un compilador de C++ (g++ o MSVC) para compilar el código generado
 
@@ -49,7 +50,7 @@ python codigoPD.py mi_problema.dp --algoritmo bottom-up --gen clase --reconstrui
 | `--gen` | `funcion` / `clase` | `funcion` | estilo de la salida |
 | `--space-opt` | (bandera) | — | optimización de espacio (solo con `bottom-up`) |
 | `--reconstruir` | (bandera) | — | reconstruye también la solución óptima |
-| `--smt` | (bandera) | — | usa Z3 con las precondiciones al probar la terminación (p. ej. el cambio de monedas). Los índices que dependen de los datos ya se verifican con Z3 sin este flag |
+| `--smt` | (bandera) | — | fuerza la vía Z3 para toda la verificación. No suele hacer falta: los índices que dependen de los datos y las precondiciones no lineales (p. ej. el cambio de monedas) ya se descargan en Z3 automáticamente |
 | `--out`, `-o` | fichero | stdout | dónde escribir el C++ |
 
 ### El DSL
@@ -66,9 +67,14 @@ mochila(i, c) = max{ mochila(i-1, c), v[i] + mochila(i-1, c - w[i]) } if w[i] <=
 return mochila(N, W);
 ```
 
+El `return` puede ser una celda concreta `f(...)` o un **agregado** `max{...}( f(...) )` /
+`min{...}( f(...) )` sobre las celdas, útil cuando la respuesta no está en una posición fija
+(p. ej. la subsecuencia creciente más larga *global*, [`ejemplos/lis_global.dp`](ejemplos/lis_global.dp),
+frente a la que termina en `N`). El retorno agregado funciona con `top-down` y `bottom-up`.
+
 Hay más ejemplos en [`ejemplos/`](ejemplos): subsecuencia común más larga, distancia de
 edición, producto de matrices, corte de varilla, cambio de monedas, subsecuencia creciente
-más larga, etc.
+más larga (local y global), etc.
 
 > El código generado es la función (o clase) que resuelve el problema, **sin `main`**. Para
 > ejecutarlo, añade un `main` que proporcione los datos y llame a la función. Los arrays son

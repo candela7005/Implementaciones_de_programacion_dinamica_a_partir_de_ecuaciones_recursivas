@@ -1,0 +1,12 @@
+// Subsecuencia creciente más larga GLOBAL (a[1..N]).
+// LIS(i) es la longitud de la subsecuencia creciente más larga que TERMINA en
+// la posición i. La LIS global es el máximo de LIS(i) sobre todo i, que aquí se
+// expresa con un RETORNO AGREGADO: return max{...}( LIS(k) ). A diferencia de
+// `lis.dp` (que devuelve LIS(N), la que termina en N), esto da la verdadera LIS.
+nat N;
+array<nat> a;
+
+LIS(1) = 1;
+LIS(i) = 1 + max{1 <= k < i : a[k] < a[i]}( LIS(k) ) if i > 1;
+
+return max{1 <= k <= N}( LIS(k) );

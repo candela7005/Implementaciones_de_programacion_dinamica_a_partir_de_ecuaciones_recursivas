@@ -81,20 +81,19 @@ class TestIndicesSMT(unittest.TestCase):
 
 @unittest.skipUnless(codigoPD.Z3_DISPONIBLE, "z3 no está instalado")
 class TestPrecondiciones(unittest.TestCase):
-    """Las precondiciones (`requires`) con arrays/cuantificadores solo se
-    aprovechan con --smt. El cambio de monedas necesita `forall k: moneda[k]>=1`
-    para que su terminación sea demostrable; además, con --smt el verificador de
-    índices comprueba también los índices NO lineales (dependientes de los
-    datos), lo que distingue la versión con guarda de la que no la tiene."""
+    """Las precondiciones (`requires`) con arrays/cuantificadores las aprovecha
+    Z3. Como el solver de cota afín NO puede gestionarlas, una precondición no
+    lineal (cuantificada o con arrays, p. ej. `forall k: moneda[k]>=1`) se
+    descarga en Z3 AUTOMÁTICAMENTE, sin necesidad de --smt. El flag --smt sigue
+    forzando la vía Z3 para todo."""
 
-    def test_monedas_necesita_smt(self):
-        # Sin --smt, el solver propio no puede usar la precondición → rechaza
-        # ambas por terminación (μ = v / i+v requiere moneda[k] >= 1).
-        for nombre in ("coins", "ways"):
+    def test_precondicion_no_lineal_va_a_smt_sin_flag(self):
+        # forall k: d[k] >= 1 es no lineal -> su terminación se descarga en Z3
+        # automáticamente. ways y monedas (2D, con guarda) se aceptan SIN --smt.
+        for nombre in ("ways", "monedas"):
             with self.subTest(ejemplo=nombre):
                 ok, salida = validar_entrada(_leer(nombre + ".dp"))
-                self.assertFalse(ok, f"{nombre} debería rechazarse sin --smt")
-                self.assertIn("Terminación", salida)
+                self.assertTrue(ok, f"{nombre} debería aceptarse sin --smt:\n{salida}")
 
     def test_ways_con_smt(self):
         # La versión 2D con guarda `if moneda[i] <= v` garantiza v-moneda[i] >= 0:
@@ -102,23 +101,34 @@ class TestPrecondiciones(unittest.TestCase):
         ok, salida = validar_entrada(_leer("ways.dp"), usar_smt=True)
         self.assertTrue(ok, f"ways debería generarse con --smt:\n{salida}")
 
-    def test_coins_1d_rechazada_por_indices(self):
-        # La versión 1D `coins(v) = min{1<=k<=N}(coins(v-moneda[k])+1)` evalúa el
-        # cuerpo para TODAS las k, sin poder filtrar las que cumplen moneda[k]<=v:
-        # puede leer coins(v-moneda[k]) con índice negativo. Con --smt, el
-        # verificador de índices lo refuta y la rechaza (no genera código que pete).
-        ok, salida = validar_entrada(_leer("coins.dp"), usar_smt=True)
-        self.assertFalse(ok, "coins 1D debería rechazarse por índices fuera de rango")
+    def test_coins_1d_sin_filtro_rechazada_por_indices(self):
+        # La versión 1D SIN filtro `coins(v) = min{1<=k<=N}(coins(v-moneda[k])+1)`
+        # evalúa el cuerpo para TODAS las k, sin descartar las que incumplen
+        # moneda[k]<=v: puede leer coins(v-moneda[k]) con índice negativo. Su
+        # terminación se prueba sola (Z3 con la precondición no lineal), pero el
+        # verificador de índices la refuta y la rechaza. Fuente embebida para no
+        # depender de si ejemplos/coins.dp lleva o no el filtro.
+        fuente = (
+            "nat N, V;\n"
+            "array<nat> moneda;\n"
+            "requires forall k: moneda[k] >= 1;\n"
+            "coins(0) = 0;\n"
+            "coins(v) = min{1 <= k <= N}( coins(v - moneda[k]) + 1 ) if v > 0;\n"
+            "return coins(V);\n"
+        )
+        ok, salida = validar_entrada(fuente)  # sin --smt: termina vía Z3, falla índices
+        self.assertFalse(ok, "coins 1D sin filtro debería rechazarse por índices")
         self.assertIn("Índices fuera de rango", salida)
 
     def test_monedas_min_2d(self):
         # Mínimo de monedas 2D con guarda `if d[i] <= c`: el índice no lineal
-        # c - d[i] es seguro y, con --smt, demostrable (terminación + índices).
+        # c - d[i] es seguro y demostrable (terminación + índices).
         ok, salida = validar_entrada(_leer("monedas.dp"), usar_smt=True)
         self.assertTrue(ok, f"monedas debería generarse con --smt:\n{salida}")
-        # Sin --smt no se prueba su terminación (μ = i+c necesita d[k] >= 1).
-        ok2, _ = validar_entrada(_leer("monedas.dp"))
-        self.assertFalse(ok2, "monedas debería rechazarse sin --smt (terminación)")
+        # Y también SIN --smt: la precondición no lineal forall d[k]>=1 se
+        # descarga en Z3 automáticamente, así que ya no hace falta el flag.
+        ok2, salida2 = validar_entrada(_leer("monedas.dp"))
+        self.assertTrue(ok2, f"monedas debería aceptarse sin --smt:\n{salida2}")
 
     def test_filtro_acota_indice_no_lineal(self):
         # El filtro de una reducción se pasa EN CRUDO a Z3 (como la guarda y las
